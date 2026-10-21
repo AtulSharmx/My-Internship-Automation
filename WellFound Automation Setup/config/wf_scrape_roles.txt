@@ -1,0 +1,50 @@
+# Wellfound role pages the scraper walks.
+#
+# One role slug per line.  Each line becomes a public page:
+#
+#     https://wellfound.com/role/r/<slug>
+#
+# Wellfound has no flat company directory - it organises companies by the role
+# they are hiring for - so every role below contributes different companies.
+# Blank lines and lines starting with '#' are ignored.
+#
+# Edit this file freely: add a slug, remove one, reorder them.  Nothing else
+# needs to change.  Run
+#
+#     .\.venv\Scripts\python.exe -m startup_agent.cli scrape
+#
+# to collect the companies listed under these roles.
+#
+# ---------------------------------------------------------------------------
+
+# --- engineering -------------------------------------------------------
+software-engineer
+full-stack-engineer
+full-stack-developer
+backend-engineer
+backend-developer
+frontend-engineer
+react-developer
+mobile-engineer
+devops-engineer
+qa-engineer
+security-engineer
+ai-engineer
+machine-learning-engineer
+data-scientist
+data-analyst
+
+# --- product / design --------------------------------------------------
+product-manager
+product-designer
+ui-ux-designer
+
+# --- business / growth -------------------------------------------------
+operations-manager
+marketing
+growth-marketer
+account-manager
+customer-success
+sales-manager
+financial-analyst
+hr-manager

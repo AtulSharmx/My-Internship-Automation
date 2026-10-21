@@ -1,0 +1,8 @@
+.venv/
+browser_profile/
+logs/
+__pycache__/
+*.pyc
+.git/
+.env
+wfbot-deploy.tar.gz

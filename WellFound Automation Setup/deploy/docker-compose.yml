@@ -1,0 +1,26 @@
+# Run from the project root:
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Everything stateful lives on the host: data/ (history), logs/, and
+# browser_profile/ (the Wellfound session).
+services:
+  wfbot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: wfbot:latest
+    container_name: wfbot
+    restart: unless-stopped
+    init: true
+    # Keep the mounted profile/data writable regardless of the image's default user.
+    user: "0:0"
+    shm_size: "1gb"
+    env_file:
+      - ../.env
+    environment:
+      TZ: Asia/Kolkata
+      WF_HEADLESS: "false"
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ../browser_profile:/app/browser_profile

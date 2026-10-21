@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apollo Email Finder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232457d6'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='Segoe UI, sans-serif' font-weight='800' font-size='25' fill='white'%3EAE%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/desktop.css">
+</head>
+<body class="desktop-body">
+  <main class="desktop-app">
+    <header class="desktop-header">
+      <div class="desktop-brand">
+        <div class="logo">AE</div>
+        <div>
+          <h1>Apollo Email Finder</h1>
+          <p>One email per company · local only</p>
+        </div>
+      </div>
+      <div id="statusPill" class="pill idle"><span class="dot"></span><span id="statusPillText">Idle</span></div>
+    </header>
+
+    <section id="uploadView" class="desktop-card">
+      <div class="desktop-hero">
+        <span class="eyebrow">New run</span>
+        <h2>Upload your company sheet</h2>
+        <p>Drop your file or browse. Apollo will work through new companies and return one email per company.</p>
+      </div>
+
+      <div id="dropzone" class="dropzone desktop-dropzone" tabindex="0" role="button" aria-label="Choose or drop a spreadsheet">
+        <input id="fileInput" type="file" accept=".xlsx,.xlsm,.csv,.json" hidden>
+        <div class="drop-orb">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+        </div>
+        <div class="drop-copy">
+          <strong>Drop your spreadsheet here</strong>
+          <p>or <span class="browse-link">browse files</span></p>
+          <span class="drop-hint">XLSX, XLSM, CSV or JSON · up to 25 MB</span>
+        </div>
+      </div>
+
+      <div id="fileCard" class="upload-card desktop-file-card" hidden>
+        <div class="desktop-file-top">
+          <div id="fileIcon" class="file-icon">XLS</div>
+          <div class="desktop-file-side">
+            <span id="fileBadge" class="soft-badge" aria-live="polite">Uploading</span>
+            <button id="removeFileBtn" class="icon-btn small desktop-remove" type="button" aria-label="Remove file" title="Remove file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="desktop-file-copy">
+          <strong id="fileName">—</strong>
+          <span id="fileMeta">—</span>
+        </div>
+        <div id="uploadProgressWrap" class="upload-progress">
+          <div class="slim-track"><div id="uploadBar" class="slim-bar"></div></div>
+          <div class="upload-meta">
+            <span id="uploadStatusText" aria-live="polite">Uploading spreadsheet…</span>
+            <span id="uploadPct">0%</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="uploadError" class="inline-alert" role="alert" hidden>
+        <div class="alert-copy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+          <div>
+            <strong>Could not read this file</strong>
+            <p id="uploadErrorText"></p>
+          </div>
+        </div>
+        <button id="retryUploadBtn" class="btn ghost small" type="button">Try again</button>
+      </div>
+
+      <div id="fileDetails" class="desktop-details" hidden>
+        <div class="desktop-details-head">
+          <div>
+            <span class="eyebrow">Ready to enrich</span>
+            <h3>Choose a credit limit</h3>
+          </div>
+          <button id="replaceFileBtn" class="link-btn" type="button">Replace file</button>
+        </div>
+
+        <div class="summary-chips">
+          <span class="summary-chip"><strong id="summaryRows">0</strong> rows</span>
+          <span class="summary-chip"><strong id="summaryDomains">0</strong> companies</span>
+          <span class="summary-chip"><strong id="summaryColumns">0</strong> columns</span>
+        </div>
+
+        <div id="limitPicker" class="desktop-limits" role="group" aria-label="Credit limit">
+          <button class="limit-pill" type="button" data-limit="1">1</button>
+          <button class="limit-pill" type="button" data-limit="5">5</button>
+          <button class="limit-pill" type="button" data-limit="10">10</button>
+          <button class="limit-pill" type="button" data-limit="25">25</button>
+        </div>
+        <p id="creditHint" class="desktop-hint">Choose a credit limit before starting.</p>
+
+        <button id="startBtn" class="btn primary desktop-start" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg>
+          <span id="startBtnText">Start run</span>
+        </button>
+        <p class="desktop-foot-note">One reveal per company. Processed companies are skipped automatically.</p>
+      </div>
+
+      <div id="idleHint" class="desktop-idle-hint">
+        <span class="local-dot"></span>
+        Ready when you are. Your file stays on this laptop.
+      </div>
+    </section>
+
+    <section id="runView" class="desktop-card run-desktop-card" hidden>
+      <div class="desktop-run-head">
+        <div>
+          <span class="eyebrow">Live run</span>
+          <h2 id="runTitle">Processing companies</h2>
+          <p id="currentCompany">Preparing…</p>
+        </div>
+        <div id="phaseChip" class="phase-chip">Running</div>
+      </div>
+
+      <div class="desktop-progress-track"><div id="progressBar" class="progress-bar"></div></div>
+      <div class="desktop-progress-caption">
+        <span id="progressCount">0 / 0 companies</span>
+        <span id="runElapsed">0:00</span>
+      </div>
+
+      <div class="desktop-stats">
+        <div class="desktop-stat"><span>Handled</span><strong id="statHandled">0</strong></div>
+        <div class="desktop-stat accent-blue"><span>Credits</span><strong id="statCredits">0</strong></div>
+        <div class="desktop-stat accent-green"><span>Verified</span><strong id="statVerified">0</strong></div>
+        <div class="desktop-stat accent-amber"><span>Guessed</span><strong id="statGuessed">0</strong></div>
+      </div>
+
+      <div id="activityLine" class="desktop-activity">Waiting for the first update…</div>
+
+      <div id="challengeBox" class="inline-alert desktop-challenge" hidden>
+        <div class="alert-copy">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+          <div>
+            <strong id="challengeTitle">Apollo challenge</strong>
+            <p id="challengeText"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="desktop-run-actions">
+        <button id="stopBtn" class="btn danger-ghost" type="button" hidden>Stop run</button>
+        <button id="showBrowserBtn" class="btn ghost" type="button" hidden>Show Apollo browser</button>
+        <button id="newRunBtn" class="btn primary" type="button" hidden>New run</button>
+      </div>
+
+      <div id="outputCard" class="desktop-output" hidden>
+        <div>
+          <span class="eyebrow">Finished</span>
+          <h3 id="outputName">—</h3>
+          <p>Workbook is saved locally and will also arrive on Telegram.</p>
+        </div>
+        <div class="desktop-output-actions">
+          <button id="openFolderBtn" class="btn ghost small" type="button">Open folder</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="desktop-footer">
+      <span>Apollo web UI · one reveal per company</span>
+      <span>No Apollo API · no email sending</span>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/desktop.js"></script>
+</body>
+</html>

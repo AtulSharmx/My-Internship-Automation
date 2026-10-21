@@ -1,0 +1,138 @@
+# Copy to .env (or just run `python setup_wizard.py`, which writes it for you).
+# .env is git-ignored: credentials never leave this machine.
+
+# --- Telegram (required) --------------------------------------------------
+# Create a bot with @BotFather -> /newbot, paste the token here.
+TELEGRAM_BOT_TOKEN=
+# Numeric id of the chat the bot reports to. `setup_wizard.py` finds it for you.
+TELEGRAM_CHAT_ID=
+
+# --- Wellfound credentials (optional) ------------------------------------
+# Recommended: leave these empty and run `python setup_wizard.py --login` once.
+# A stored browser session also survives 2FA / Google sign-in, and this bot
+# then never touches your password again. Fill them in only as a fallback.
+WF_EMAIL=
+WF_PASSWORD=
+
+# --- Roles (required: fullstack, backend, web, vibe, mern, mobile) -------
+WF_ROLES=fullstack,web,vibe,mern,mobile
+
+# --- Cadence --------------------------------------------------------------
+# One fixed daily pass in local time. It can run for as long as it needs.
+# Blank = legacy interval mode (WF_INTERVAL_MINUTES).
+WF_DAILY_RUN_AT=20:00
+# Legacy fallback cadence, used only when WF_DAILY_RUN_AT is blank.
+# Minutes between runs (60 = hourly). Use 0 for continuous mode.
+WF_INTERVAL_MINUTES=60
+# Gap between runs only when WF_INTERVAL_MINUTES=0 (jittered up to 2x).
+WF_CONTINUOUS_GAP_SECONDS=90
+WF_INTERVAL_JITTER_SECONDS=240
+WF_MIN_DELAY_SECONDS=45
+WF_MAX_DELAY_SECONDS=150
+# 0 = no cap: apply to every fresh match found by the daily pass.
+WF_MAX_APPS_PER_RUN=0
+# 0 = no cap across the whole local day.
+WF_MAX_APPS_PER_DAY=0
+
+# --- Browser --------------------------------------------------------------
+# false = visible window (needed to solve an anti-bot check by hand)
+WF_HEADLESS=false
+# "chrome" / "msedge" use your installed browser; empty = bundled Chromium
+WF_BROWSER_CHANNEL=
+WF_TIMEZONE=Asia/Kolkata
+# Leave empty for the default ./browser_profile
+WF_PROFILE_DIR=
+# Set only if you want to pin a specific user agent string
+WF_USER_AGENT=
+
+# --- Optional behaviour ---------------------------------------------------
+# Text typed into an empty "message to the hiring manager" box
+WF_COVER_NOTE=
+# Primary discovery: the signed-in /jobs search with the Internship + 1-10
+# employees filters. Public role pages remain a fallback if that search fails.
+WF_USE_SEARCH_PAGE=true
+# How many public fallback listing pages (/role/r/<slug>) are read per role.
+# Intern titles cluster on the first page, so 2-3 is plenty.
+WF_MAX_PAGES_PER_ROLE=2
+# --- Company size preference ----------------------------------------------
+# Apply only to 1-10 employee startups by default. The old 11-50 fallback is
+# off; set WF_ALLOW_SIZE_FALLBACK=true only if you want it back.
+WF_COMPANY_SIZE_MIN=1
+WF_COMPANY_SIZE_MAX=10
+WF_COMPANY_SIZE_FALLBACK_MAX=50
+WF_ALLOW_SIZE_FALLBACK=false
+# Cap on job pages opened just to read the company head-count per run.
+# 0 = no cap.
+WF_MAX_SIZE_CHECKS_PER_RUN=0
+# --- Freshness ------------------------------------------------------------
+# Strict 24-hour window: only internships launched in the last day are applied
+# to, newest first. "1 day ago"/"yesterday" counts as outside the window.
+# 0 disables the filter.
+WF_MAX_JOB_AGE_DAYS=1
+# If a listing's age cannot be read on the card or detail page, skip it rather
+# than assuming it is fresh.
+WF_REQUIRE_POSTED_AGE=true
+# --- Quality filters ------------------------------------------------------
+# Non-engineering titles that broad role keywords would otherwise accept
+# ("Mobile Marketing Intern", "AI-First Marketing Intern"). Word-boundary
+# matched, so "Salesforce" is not vetoed by "sales".
+WF_NEGATIVE_KEYWORDS=marketing,sales,growth,content,copywriting,copywriter,social media,seo,human resources,hr,recruiter,talent acquisition,business development,operations,finance,accounting,customer support,customer success,graphic design,design intern,designer,ui/ux,ui design,ux design,product design,video editing,video editor,virtual assistant,data entry
+# Optional: skip unpaid / commission-only / equity-only listings.
+# Off by default: paid and unpaid internships are both applied to.
+WF_SKIP_UNPAID=false
+# Remember reusable form answers (LinkedIn, GitHub, years of experience) and
+# fill them automatically instead of asking in Telegram again. /answers shows
+# the bank; /forget <id> removes an entry.
+WF_ANSWER_BANK=true
+# Send a screenshot of each confirmation as proof with the "Applied" message.
+WF_SCREENSHOT_PROOF=true
+WF_PROOF_DIR=
+# After applying to a company, skip its other roles for this many days (0 = off).
+WF_COMPANY_COOLDOWN_DAYS=30
+# Retry an application that failed with an error this many times.
+WF_MAX_RETRIES=2
+# Import applications you made manually from /jobs/applications and track responses.
+WF_RECONCILE_APPLICATIONS=true
+# Warn at startup if the candidate profile looks incomplete.
+WF_PROFILE_PREFLIGHT=true
+# --- Location preference --------------------------------------------------
+# Apply only to remote roles and to onsite roles in these cities.
+WF_ACCEPT_REMOTE=true
+WF_ACCEPT_LOCATIONS=Gurugram,Gurgaon
+# A "Hires remotely in <region>" role only counts as remote if the region is
+# listed here. US-only remote roles are skipped by default.
+WF_ACCEPT_REMOTE_REGIONS=Everywhere,Anywhere,Worldwide,India
+# Public city pages read only when the signed-in search fails, because
+# Wellfound's role pages are remote-filtered and would otherwise hide onsite
+# Gurugram roles.
+WF_LOCATION_PAGES=https://wellfound.com/location/gurgaon
+# --- Interactive questions ------------------------------------------------
+# When an application asks something the profile cannot answer, ask in
+# Telegram and wait for a reply instead of marking the job "needs review".
+WF_ASK_QUESTIONS=true
+WF_QUESTION_TIMEOUT_SECONDS=900
+# --- Reporting ------------------------------------------------------------
+# Target applications and an optional deadline; /goal changes these at runtime.
+WF_APPLY_GOAL=100
+WF_GOAL_DEADLINE=2026-12-31
+# Send the compact daily summary at these local hours (comma-separated, 0-23).
+# 20 = one summary at 8pm. Add more hours if you want.
+WF_DAILY_REPORT=true
+WF_DAILY_REPORT_HOURS=20
+# Escape hatch: replaces the role-page walk with a single results URL. `{query}`
+# is filled in with the role query, e.g.
+#   WF_SEARCH_URL_TEMPLATE=https://wellfound.com/jobs?query={query}
+WF_SEARCH_URL_TEMPLATE=
+# How long to wait for you to solve a Cloudflare / CAPTCHA check
+WF_CHALLENGE_WAIT_SECONDS=240
+# Consecutive bad runs before the legacy interval mode starts spacing runs
+# further apart. The fixed 20:00 daily schedule always waits for its next slot.
+WF_MAX_CONSECUTIVE_FAILURES=3
+WF_BACKOFF_MAX_MULTIPLIER=6
+WF_ACTION_TIMEOUT_MS=20000
+WF_SCROLL_ROUNDS=2
+
+# --- Storage / logging ----------------------------------------------------
+WF_DB_PATH=
+WF_LOG_DIR=
+WF_LOG_LEVEL=INFO

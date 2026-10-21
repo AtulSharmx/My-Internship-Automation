@@ -1,0 +1,26 @@
+# secrets
+.env
+
+# browser session (contains your Wellfound login cookies!)
+browser_profile/
+
+# runtime data
+data/
+logs/
+imports/
+exports/
+
+# generated exports and local capture files
+*.xlsx
+*.csv
+*.jsonl
+*.ndjson
+!templates/*.csv
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/

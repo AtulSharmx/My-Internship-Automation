@@ -1,0 +1,11 @@
+.venv/
+.env
+apollo_profile/
+desktop_profile/
+data/
+exports/
+logs/
+imports/uploads/
+__pycache__/
+.pytest_cache/
+*.pyc

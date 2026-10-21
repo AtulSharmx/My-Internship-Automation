@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Project virtual environments
+*/\.venv/
+*/\.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets & credentials
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+credentials.json
+token.json
+
+# Logs
+logs/
+*.log
+
+# Data / exports / imports
+exports/
+imports/
+data/*.db
+data/*.db-*
+data/*.lock
+data/*.pid
+
+# Recon / debug outputs
+*.pid
+Apollo/recon/out/
+Apollo/recon/*.pid
+
+# Browser profiles (contain cookies, history, login state)
+browser_profile/
+*/browser_profile/
+*/desktop_profile/
+*/apollo_profile/
+*/wfscrape_profile/
+
+# Build artifacts
+*.tar.gz
+*.zip
+dist/
+build/
+*.egg-info/
+
+# Temporary files
+%TEMP%/
+tmp/
+temp/
+*.tmp
+
+# Apollo specific
+Apollo/apollo_tool/templates/__pycache__/
+Apollo/apollo_tool/static/__pycache__/
+
+# WellFound specific
+WellFound Automation Setup/wfbot-deploy.tar.gz
+WellFound Automation Setup/deploy/bundle/
+
+# Coverage
+htmlcov/
+
+# Large files
+*.whl
+*.tgz

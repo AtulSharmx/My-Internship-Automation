@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apollo Email Finder</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232457d6'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='Segoe UI, sans-serif' font-weight='800' font-size='25' fill='white'%3EAE%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="shell" class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">AE</div>
+        <div>
+          <h1>Apollo Email Finder</h1>
+          <p>Local, credit-safe email enrichment</p>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span class="local-badge"><span class="local-dot"></span>Local only</span>
+        <button id="openSetupBtn" class="btn ghost small" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          New run
+        </button>
+        <div id="statusPill" class="pill idle"><span class="dot"></span><span id="statusPillText">Idle</span></div>
+      </div>
+    </header>
+
+    <div id="banner" class="banner" role="status" hidden></div>
+
+    <main class="layout">
+      <section class="card workbook-card">
+        <div class="section-head">
+          <div>
+            <span class="eyebrow">Workbook</span>
+            <h2>Current file</h2>
+          </div>
+        </div>
+
+        <div id="workbookEmpty" class="workbook-empty">
+          <div class="empty-orb">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M8.5 13h7M8.5 17h4"/></svg>
+          </div>
+          <strong>No workbook loaded</strong>
+          <p>Choose the company list you want to enrich.</p>
+          <button id="chooseFileBtn" class="btn primary small" type="button">Choose file</button>
+        </div>
+
+        <div id="workbookFilled" class="workbook-filled" hidden>
+          <div class="workbook-file">
+            <div id="workbookIcon" class="file-icon">XLS</div>
+            <div class="workbook-file-copy">
+              <strong id="workbookName">—</strong>
+              <span id="workbookMeta">—</span>
+            </div>
+            <span class="ready-check" title="Ready">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+            </span>
+          </div>
+          <div class="workbook-stats">
+            <span><strong id="workbookRows">0</strong> rows</span>
+            <span><strong id="workbookDomains">0</strong> domains</span>
+            <span><strong id="workbookColumns">0</strong> columns</span>
+          </div>
+          <button id="reviewBtn" class="btn secondary block" type="button">Review &amp; start</button>
+        </div>
+
+        <div class="ledger-line">
+          <span>Local ledger</span>
+          <strong id="ledgerText">—</strong>
+        </div>
+        <details class="recovery">
+          <summary>Recovery: reset a company</summary>
+          <p>Only after checking Apollo manually. This deletes the ledger row and allows one new reveal later.</p>
+          <div class="recovery-row">
+            <input id="resetDomain" type="text" placeholder="domain.com" autocomplete="off" spellcheck="false">
+            <button id="resetBtn" class="btn ghost small" type="button">Reset</button>
+          </div>
+        </details>
+      </section>
+
+      <section class="right-stack">
+        <div class="card progress-card">
+          <div class="progress-head">
+            <div>
+              <span class="eyebrow">Live</span>
+              <h2 id="progressTitle">Ready when you are</h2>
+              <p id="currentCompany">Upload a file to begin.</p>
+            </div>
+            <div class="progress-head-actions">
+              <button id="stopBtn" class="btn danger-ghost small" type="button" hidden>Stop run</button>
+              <div id="phaseChip" class="phase-chip">Idle</div>
+            </div>
+          </div>
+
+          <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+          <div class="progress-caption"><span id="progressCount">0 / 0 companies</span><span id="runMeta">No active run</span></div>
+
+          <div class="stats">
+            <div class="stat"><span>Handled</span><strong id="statHandled">0</strong></div>
+            <div class="stat accent-blue"><span>Credits spent</span><strong id="statCredits">0</strong></div>
+            <div class="stat accent-green"><span>Verified</span><strong id="statVerified">0</strong></div>
+            <div class="stat accent-amber"><span>Guessed</span><strong id="statGuessed">0</strong></div>
+            <div class="stat"><span>Masked</span><strong id="statMasked">0</strong></div>
+            <div class="stat"><span>Skipped / errors</span><strong id="statSkipped">0 / 0</strong></div>
+          </div>
+
+          <div id="personLine" class="person-line" hidden></div>
+        </div>
+
+        <div class="card log-card">
+          <div class="log-head">
+            <div>
+              <span class="eyebrow">Activity</span>
+              <h2>Run log</h2>
+            </div>
+            <button id="clearLogBtn" class="link-btn" type="button">Clear view</button>
+          </div>
+          <pre id="log" class="log">Waiting for a run…</pre>
+        </div>
+
+        <div id="outputCard" class="card output-card" hidden>
+          <div>
+            <span class="eyebrow">Output</span>
+            <h2 id="outputName">—</h2>
+            <p>The finished workbook is also saved in the exports folder. The first <strong>employees</strong> sheet has name, company, members, website, and email.</p>
+          </div>
+          <button id="openFolderBtn" class="btn ghost" type="button">Open folder</button>
+        </div>
+      </section>
+    </main>
+
+    <section class="card history-card">
+      <div class="log-head">
+        <div>
+          <span class="eyebrow">Ledger</span>
+          <h2>Recent runs</h2>
+        </div>
+        <div class="browser-actions">
+          <button id="showBrowserBtn" class="btn ghost small" type="button" hidden>Show Apollo browser</button>
+          <button id="closeBrowserBtn" class="btn ghost small" type="button" hidden>Close Apollo browser</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="history">
+          <thead>
+            <tr><th>Started</th><th>Status</th><th>Companies</th><th>Credits</th><th>Verified</th><th>Guessed</th><th>Output</th></tr>
+          </thead>
+          <tbody id="historyBody"><tr><td colspan="7" class="empty">No runs yet.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer>
+      <span>Apollo runs in your real Chrome profile. One reveal per company, enforced by the local SQLite ledger.</span>
+      <span>No Apollo API &middot; No email sending &middot; Everything stays on this machine</span>
+    </footer>
+  </div>
+
+  <div id="setupModal" class="modal" hidden>
+    <div class="modal-scrim" data-modal-close></div>
+    <section class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="setupTitle" tabindex="-1">
+      <header class="modal-header">
+        <div>
+          <span class="eyebrow">Start a run</span>
+          <h2 id="setupTitle">Upload your company sheet</h2>
+          <p class="modal-sub">Drop a spreadsheet and Apollo will work through its companies. One email reveal per company.</p>
+        </div>
+        <button id="closeSetupBtn" class="icon-btn" type="button" aria-label="Close upload dialog">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </header>
+
+      <div class="modal-content">
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a spreadsheet">
+          <input id="fileInput" type="file" accept=".xlsx,.xlsm,.csv,.json" hidden>
+          <div class="drop-orb">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+          </div>
+          <div class="drop-copy">
+            <strong>Drop your spreadsheet here</strong>
+            <p>or <span class="browse-link">browse files</span></p>
+            <span class="drop-hint">XLSX, XLSM, CSV or JSON &middot; up to 25 MB</span>
+          </div>
+        </div>
+
+        <div id="fileCard" class="upload-card" hidden>
+          <div class="upload-file-main">
+            <div id="fileIcon" class="file-icon">XLS</div>
+            <div class="upload-file-copy">
+              <strong id="fileName">—</strong>
+              <span id="fileMeta">—</span>
+            </div>
+            <span id="fileBadge" class="soft-badge" aria-live="polite">Uploading</span>
+            <button id="removeFileBtn" class="icon-btn small" type="button" aria-label="Remove file" title="Remove file">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <div id="uploadProgressWrap" class="upload-progress">
+            <div class="slim-track"><div id="uploadBar" class="slim-bar"></div></div>
+            <div class="upload-meta">
+              <span id="uploadStatusText" aria-live="polite">Uploading spreadsheet…</span>
+              <span id="uploadPct">0%</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="uploadError" class="inline-alert" role="alert" hidden>
+          <div class="alert-copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+            <div>
+              <strong>Could not read this file</strong>
+              <p id="uploadErrorText"></p>
+            </div>
+          </div>
+          <button id="retryUploadBtn" class="btn ghost small" type="button">Try again</button>
+        </div>
+
+        <div id="fileDetails" class="file-details" hidden>
+          <div class="details-head">
+            <div>
+              <span class="eyebrow">Workbook preview</span>
+              <h3>Ready to enrich</h3>
+            </div>
+            <button id="replaceFileBtn" class="link-btn" type="button">Replace file</button>
+          </div>
+
+          <div class="summary-chips">
+            <span class="summary-chip"><strong id="summaryRows">0</strong> rows</span>
+            <span class="summary-chip"><strong id="summaryDomains">0</strong> unique domains</span>
+            <span id="summaryDuplicatesWrap" class="summary-chip muted" hidden><strong id="summaryDuplicates">0</strong> duplicates</span>
+            <span id="summaryMissingWrap" class="summary-chip warn" hidden><strong id="summaryMissing">0</strong> missing domains</span>
+          </div>
+
+          <div id="columnChips" class="chips"></div>
+
+          <div class="preview-block">
+            <div class="preview-head">
+              <span>First rows</span>
+              <span id="previewCaption">—</span>
+            </div>
+            <div id="previewWrap" class="preview-wrap" hidden>
+              <table class="preview">
+                <thead><tr><th>Company</th><th>Domain</th><th>Team size</th><th>Niche</th></tr></thead>
+                <tbody id="previewBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="runSettings" class="run-settings" hidden>
+          <div class="settings-divider"></div>
+          <div class="settings-grid">
+            <div class="setting">
+              <label class="field-label" for="limit">New companies to process</label>
+              <div class="limit-row">
+                <input id="limit" type="number" min="1" max="50" value="5" inputmode="numeric">
+                <span class="limit-suffix">companies</span>
+              </div>
+              <p class="field-note">Already processed companies are skipped by the ledger.</p>
+            </div>
+
+            <label class="toggle-row" for="hideBrowser">
+              <input id="hideBrowser" type="checkbox" checked>
+              <span class="switch"></span>
+              <span class="toggle-copy">
+                <strong>Hide Chrome while running</strong>
+                <small>Chrome moves off-screen and returns automatically if Apollo needs you.</small>
+              </span>
+            </label>
+          </div>
+
+          <div class="credit-note">
+            <div class="credit-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v18M17 7.5c0-2-2.2-3.5-5-3.5S7 5.5 7 7.5 9.2 11 12 11s5 1.5 5 3.5S14.8 18 12 18s-5-1.5-5-3.5"/></svg>
+            </div>
+            <div class="credit-copy">
+              <strong id="creditHint">Live run: up to 5 credits may be used.</strong>
+              <span id="setupLedger">Checking ledger…</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <footer class="modal-footer">
+        <span class="foot-note">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <span id="footerNoteText">Ledger protected &middot; one reveal per company</span>
+        </span>
+        <div class="modal-actions">
+          <button id="cancelSetupBtn" class="btn ghost" type="button">Cancel</button>
+          <button id="startBtn" class="btn primary" type="button" disabled>Start run</button>
+        </div>
+      </footer>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

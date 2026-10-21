@@ -1,0 +1,2 @@
+name,website,employee_count,industry,description,wellfound_url,job_urls,location,source_url,source_id,discovered_at,notes
+Synthetic Example Co,https://example.test,1-10 employees,Software,Synthetic example only - replace this row,https://wellfound.com/company/synthetic-example,https://example.test/jobs,Delhi,https://example.test,example-001,2026-01-01,Synthetic fixture; not a real company

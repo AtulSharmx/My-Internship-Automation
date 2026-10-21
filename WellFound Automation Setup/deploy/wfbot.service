@@ -1,0 +1,21 @@
+[Unit]
+Description=Wellfound internship bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wfbot
+Group=wfbot
+WorkingDirectory=/opt/wfbot
+Environment=TZ=Asia/Kolkata
+Environment=WF_HEADLESS=false
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/wfbot/ms-playwright
+ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1440x900x24" /opt/wfbot/.venv/bin/python run.py
+Restart=always
+RestartSec=30
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
