@@ -100,11 +100,43 @@ PATTERNS: tuple[PatternSpec, ...] = (
     PatternSpec("{first}.{l}"),
     PatternSpec("{first}_{l}"),
     PatternSpec("{first}{l}"),
+    # Real-world formats that use the last initial before the first name.
+    # Example: Mohammed Halabi -> hmohammed@albaraka.bh
+    PatternSpec("{l}{first}"),
+    PatternSpec("{l}.{first}"),
+    PatternSpec("{l}_{first}"),
+    PatternSpec("{l}-{first}"),
     PatternSpec("{last}.{f}"),
     PatternSpec("{last}{f}"),
     PatternSpec("{first}"),
     PatternSpec("{last}"),
 )
+
+# Exact matches in these formats are common enough to keep high confidence.
+# Anything else is still accepted, but deliberately marked low confidence.
+COMMON_TEMPLATES = {
+    "{first}.{last}",
+    "{first}_{last}",
+    "{first}-{last}",
+    "{first}{last}",
+    "{f}.{last}",
+    "{f}_{last}",
+    "{f}-{last}",
+    "{f}{last}",
+    "{first}.{l}",
+    "{first}_{l}",
+    "{first}{l}",
+    "{first}",
+}
+
+# Formats that need a full last name (or a middle name) cannot be rendered for
+# a masked name such as "Dylan F". Formats that only need first name/initial
+# can still produce a safe, clearly-labelled partial guess.
+PARTIAL_NAME_BLOCKERS = ("{last}", "{middle}", "{m}")
+
+# The workbook stores the human-readable description (for example "first.last").
+# This mapping lets older saved results be re-enriched without a new Apollo run.
+TEMPLATE_BY_DESCRIPTION = {spec.description: spec.template for spec in PATTERNS}
 
 
 @dataclass(frozen=True)
@@ -139,7 +171,19 @@ def _values(parts: NameParts) -> dict[str, str]:
 
 
 def render_pattern(template: str, parts: NameParts) -> str | None:
-    if not parts.first or not parts.last:
+    """Render a pattern, allowing partial names when the pattern permits it.
+
+    A masked Apollo name ("Dylan F") only exposes the first name and last
+    initial. Patterns such as ``{first}`` or ``{first}{l}`` can still be
+    rendered from that information; patterns that need the full last name
+    cannot. Single-name contacts are handled the same way.
+    """
+    if not parts.first:
+        return None
+    if any(blocker in template for blocker in PARTIAL_NAME_BLOCKERS):
+        if not parts.usable:
+            return None
+    if "{l}" in template and not parts.last:
         return None
     values = _values(parts)
     if "{middle}" in template or "{m}" in template:
@@ -156,6 +200,17 @@ def render_pattern(template: str, parts: NameParts) -> str | None:
     if len(rendered) > 64:
         return None
     return rendered
+
+
+def can_render_partial_name(template: str, parts: NameParts) -> bool:
+    """True when a masked/incomplete name still has everything the pattern needs."""
+    if not template or not parts.first:
+        return False
+    if any(blocker in template for blocker in PARTIAL_NAME_BLOCKERS):
+        return False
+    if "{l}" in template and not parts.last:
+        return False
+    return render_pattern(template, parts) is not None
 
 
 def guess_email(template: str, full_name: str, domain: str) -> str | None:
@@ -205,12 +260,14 @@ def infer_pattern(email: str, full_name: str) -> PatternMatch | None:
     note = "separator confirmed by the revealed address" if exact else (
         "punctuation was stripped in the revealed address; separator inferred"
     )
+    if exact and spec.template not in COMMON_TEMPLATES:
+        note += "; unusual format, so guesses from it stay low confidence"
     if suffix:
         note += f"; revealed address has numeric suffix '{suffix}', which was excluded from the pattern"
     return PatternMatch(
         template=spec.template,
         example=f"{rendered}@{domain.lower()}",
-        confidence="high" if exact else "low",
+        confidence="high" if exact and spec.template in COMMON_TEMPLATES else "low",
         note=note,
     )
 

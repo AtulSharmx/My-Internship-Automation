@@ -219,6 +219,20 @@ def safe_upload_name(raw: str) -> str:
     return name or "input.xlsx"
 
 
+def coverage_text(data: dict[str, Any]) -> str:
+    """Return a short email-coverage phrase, or an empty string when unknown."""
+    found = int(data.get("people_found") or 0)
+    covered = int(data.get("people_covered") or 0)
+    if found <= 0:
+        return ""
+    percent = round((covered / found) * 100)
+    blanks = max(0, found - covered)
+    text = f"{format_number(covered)}/{format_number(found)} ({percent}%)"
+    if blanks:
+        text += f" · {format_number(blanks)} blank"
+    return text
+
+
 def status_text(data: dict[str, Any]) -> str:
     running = is_running_phase(data)
     phase = shorten(data.get("phase") or "idle", 40).title()
@@ -251,6 +265,9 @@ def status_text(data: dict[str, Any]) -> str:
             f"<b>Credits this run:</b> {format_number(data.get('credits'))}",
         ]
     )
+    coverage = coverage_text(data)
+    if coverage:
+        lines.append(f"<b>Email coverage:</b> {coverage}")
 
     if data.get("challenge"):
         lines.append("\n⚠️ Apollo challenge detected — Chrome laptop par open hai.")
@@ -313,6 +330,9 @@ def final_text(data: dict[str, Any], had_challenge: bool = False) -> str:
         f"<b>Errors:</b> {format_number(data.get('errors'))}",
         f"<b>Credits used:</b> {format_number(data.get('credits'))}",
     ]
+    coverage = coverage_text(data)
+    if coverage:
+        lines.append(f"<b>Email coverage:</b> {coverage}")
     if data.get("last_error"):
         lines.append(f"<b>Error:</b> {escape(shorten(data.get('last_error'), 260))}")
     output = data.get("output_path")
@@ -488,6 +508,12 @@ class ApiClient:
                 "hide_browser": True,
             },
         )
+
+    async def reset_desktop(self) -> dict[str, Any]:
+        return await self.request("POST", "/api/desktop/reset")
+
+    async def close_desktop(self) -> dict[str, Any]:
+        return await self.request("POST", "/api/desktop/close")
 
     async def status(self) -> dict[str, Any]:
         return await self.request("GET", "/api/status")
@@ -718,9 +744,7 @@ class ApolloBot:
         self.starting: set[int] = set()
         self.offset = load_offset()
         self._monitor_task: asyncio.Task[None] | None = None
-        self._desktop_task: asyncio.Task[None] | None = None
         self._desktop_last_attempt = 0.0
-        self._desktop_runs: set[str] = set()
         self._upload_sig_initialized = False
         self._upload_sig = ""
         self.seen_runs: set[str] = set()
@@ -781,33 +805,25 @@ class ApolloBot:
     async def welcome(self, chat_id: int) -> None:
         text = (
             "👋 <b>Apollo Email Finder</b>\n\n"
-            "Apollo web se company emails nikalne ka kaam ab <b>Telegram se</b> hoga. "
-            "Laptop par CMD ya browser kholne ki zaroorat nahi.\n\n"
-            "<b>Kaise chalta hai</b>\n"
-            "1. 📎 se company file bhejo (XLSX / CSV / JSON)\n"
-            "2. 🚀 <b>Start</b> dabao\n"
-            "3. Limit choose karo\n"
-            "4. Finished Excel file yahin milegi\n\n"
-            "Laptop par ek chhota live popup bhi khulega — "
-            "wahan file upload karo ya progress dekho. "
-            "<b>🖥️ Laptop</b> se use dobara khol sakte ho.\n\n"
-            "Har email reveal = <b>1 Apollo credit</b>. "
-            "Pehle process ho chuki companies dobara nahi chalti."
+            "1. 🚀 <b>Start</b> dabao — upload window khulega.\n"
+            "2. File drag &amp; drop karo, limit choose karke run start karo.\n"
+            "3. Upload window khud band ho jayega; Chrome Apollo par kaam karega.\n"
+            "4. Finished Excel file yahin milegi.\n\n"
+            "Har run me fresh file upload hoti hai. "
+            "Har email reveal = <b>1 Apollo credit</b>."
         )
         await self.tg.send_message(chat_id, text, reply_markup=reply_menu())
 
     async def help(self, chat_id: int) -> None:
         text = (
             "❓ <b>Madad</b>\n\n"
-            "• <b>🚀 Start</b> — latest upload ka preview aur credit limit dikhata hai.\n"
+            "• <b>🚀 Start</b> — fresh upload window kholta hai.\n"
             "• <b>📊 Status</b> — current run, credits aur latest file.\n"
             "• <b>⏹ Stop</b> — current company ke baad run rokta hai.\n"
             "• <b>📄 Latest file</b> — last workbook dobara bhejta hai.\n"
-            "• <b>🖥️ Laptop</b> — chhota upload/live popup open karta hai.\n\n"
-            "Company file 📎 → File se bhejo. Photo nahi, document bhejo.\n"
+            "• <b>🖥️ Laptop</b> — upload window dobara kholta hai.\n\n"
             "Run ke waqt laptop on rehna chahiye. Challenge aaye to Chrome "
-            "laptop par khud open hoga; solve karke Retry dabao.\n\n"
-            "Credits sirf email reveal par lagte hain; free search 0 credits."
+            "khud open hoga; solve karke Retry dabao."
         )
         await self.tg.send_message(chat_id, text, reply_markup=reply_menu())
 
@@ -829,40 +845,7 @@ class ApolloBot:
         return data
 
     # ------------------------------------------------------------- desktop + activity
-    async def _show_desktop(self) -> None:
-        try:
-            opened = await asyncio.to_thread(show_desktop_window)
-            if not opened:
-                log.warning("Desktop window did not open (Edge/Chrome not found)")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Could not open desktop window: %s", safe_error(exc))
-
-    def _show_desktop_soon(self, *, force: bool = False, run_id: str = "") -> None:
-        """Open the popup at most once per action/run.
-
-        The popup is deliberately not tied to startup, uploads or previews.
-        Those events used to reopen it over and over.  It now opens only when
-        a run actually starts, when activity from another window is detected,
-        or when the user taps the Laptop button.
-        """
-        if run_id:
-            if run_id in self._desktop_runs:
-                return
-            self._desktop_runs.add(run_id)
-        elif not force:
-            now = time.monotonic()
-            if now - self._desktop_last_attempt < 12:
-                return
-        if self._desktop_task is not None and not self._desktop_task.done():
-            return
-        now = time.monotonic()
-        if not force and now - self._desktop_last_attempt < 12:
-            return
-        self._desktop_last_attempt = now
-        self._desktop_task = asyncio.create_task(self._show_desktop())
-
-    @staticmethod
-    def _upload_signature(upload: dict[str, Any] | None) -> str:
+    def _upload_signature(self, upload: dict[str, Any] | None) -> str:
         if not upload:
             return ""
         return "|".join(
@@ -902,12 +885,16 @@ class ApolloBot:
                             continue
                         message = await self.tg.send_message(
                             chat_id,
-                            status_text(data),
+                            "🚀 <b>Run started</b>",
                             reply_markup=running_markup(),
                         )
                         self._ensure_watcher(chat_id, int(message["message_id"]))
-                        if run_id:
-                            self._show_desktop_soon(run_id=run_id)
+                        # The upload window has done its job; close it so the
+                        # user only sees Chrome working on the real Apollo site.
+                        try:
+                            await self.api.close_desktop()
+                        except BotError:
+                            pass
                 elif (
                     run_id
                     and str(data.get("phase") or "") in {"done", "stopped", "error", "failed"}
@@ -929,27 +916,14 @@ class ApolloBot:
         self, chat_id: int, upload: dict[str, Any]
     ) -> None:
         status = str(upload.get("status") or "")
-        name = escape(upload.get("filename") or "file")
-        if status == "uploading":
-            await self.tg.send_message(
-                chat_id,
-                f"⏳ <b>Laptop se file upload ho rahi hai</b>\n\n📄 {name}\n"
-                "Workbook read hone ke baad preview aa jayega.",
-            )
-        elif status == "ready":
-            rows = format_number(upload.get("rows"))
-            domains = format_number(upload.get("unique_domains"))
-            await self.tg.send_message(
-                chat_id,
-                f"✅ <b>File laptop se upload ho gayi</b>\n\n"
-                f"📄 {name}\n{rows} rows • {domains} unique companies\n\n"
-                "Laptop popup me limit choose karke <b>Start</b> dabao.",
-            )
+        if status == "ready":
+            await self.tg.send_message(chat_id, "📄 <b>File received</b>")
         elif status == "error":
+            name = escape(upload.get("filename") or "file")
             await self.tg.send_message(
                 chat_id,
-                f"⚠️ <b>Laptop upload failed</b>\n\n📄 {name}\n"
-                f"{escape(shorten(upload.get('error'), 300))}",
+                f"⚠️ <b>File not read</b>\n{name}\n"
+                f"{escape(shorten(upload.get('error'), 240))}",
             )
 
     async def _recover_finished_run(
@@ -1036,31 +1010,6 @@ class ApolloBot:
             companies=companies[:8],
         )
 
-    def _latest_upload_path(self) -> Path | None:
-        try:
-            candidates = [
-                path
-                for path in settings.uploads_dir.iterdir()
-                if path.is_file() and path.suffix.lower() in SUPPORTED_FILES
-            ]
-        except OSError:
-            return None
-        if not candidates:
-            return None
-        return max(candidates, key=lambda path: path.stat().st_mtime)
-
-    async def stage_latest(self, chat_id: int) -> StagedFile | None:
-        path = self._latest_upload_path()
-        if path is None:
-            return None
-        try:
-            staged = await self._stage_path(path, path.name)
-        except BotError as exc:
-            log.warning("Latest upload could not be staged: %s", safe_error(exc))
-            return None
-        self.staged[chat_id] = staged
-        return staged
-
     async def handle_document(
         self, chat_id: int, document: dict[str, Any]
     ) -> None:
@@ -1090,8 +1039,7 @@ class ApolloBot:
 
         notice = await self.tg.send_message(
             chat_id,
-            f"📥 <b>File received</b>\n\n📄 {escape(name)}\n"
-            f"{format_number(size)} bytes • downloading…",
+            f"📄 <b>File received</b>\n{escape(name)}",
         )
         notice_id = int(notice["message_id"])
         try:
@@ -1105,17 +1053,11 @@ class ApolloBot:
             await self.tg.edit_message(
                 chat_id,
                 notice_id,
-                f"❌ <b>File download nahi hui</b>\n\n📄 {escape(name)}\n"
-                f"{escape(shorten(exc, 400))}",
+                f"⚠️ <b>File download nahi hui</b>\n{escape(name)}\n"
+                f"{escape(shorten(exc, 300))}",
             )
             return
 
-        await self.tg.edit_message(
-            chat_id,
-            notice_id,
-            f"⏳ <b>Uploading file</b>\n\n📄 {escape(name)}\n"
-            f"{format_number(len(data))} bytes • reading workbook…",
-        )
         try:
             payload = await self.api.upload(name, data, source="telegram")
             staged = self._staged_from_upload(payload)
@@ -1123,66 +1065,50 @@ class ApolloBot:
             await self.tg.edit_message(
                 chat_id,
                 notice_id,
-                f"❌ <b>File parse nahi hui</b>\n\n📄 {escape(name)}\n"
-                f"{escape(shorten(exc, 500))}",
+                f"⚠️ <b>File not read</b>\n{escape(name)}\n"
+                f"{escape(shorten(exc, 400))}",
             )
             return
 
         self.staged[chat_id] = staged
-        await self.send_preview(chat_id, staged, message_id=notice_id)
-
-    async def send_preview(
-        self,
-        chat_id: int,
-        staged: StagedFile,
-        message_id: int | None = None,
-    ) -> None:
-        companies = ", ".join(escape(name) for name in staged.companies[:4])
-        if len(staged.companies) > 4:
-            companies += ", …"
-        columns = ", ".join(escape(str(col)) for col in staged.columns[:7])
-        if len(staged.columns) > 7:
-            columns += ", …"
-        prefix = "✅ <b>File uploaded</b>\n\n" if message_id is not None else ""
-        text = (
-            f"{prefix}📄 <b>{escape(staged.display_name)}</b>\n"
-            f"{staged.summary}\n"
-            f"<b>Sheet:</b> {escape(staged.sheet)}\n"
-            f"<b>Columns:</b> {columns}\n"
+        await self.tg.edit_message(
+            chat_id,
+            notice_id,
+            "📄 <b>File received</b>\nChoose new companies to process.",
+            reply_markup=limit_markup(),
         )
-        if companies:
-            text += f"<b>Starting with:</b> {companies}\n"
-        text += (
-            "\nKitne <b>new</b> companies process karun?\n"
-            "Har email reveal = 1 credit. Pehle processed skip honge."
-        )
-        if message_id is not None:
-            try:
-                await self.tg.edit_message(
-                    chat_id, message_id, text, reply_markup=limit_markup()
-                )
-                return
-            except TelegramError as exc:
-                log.warning("Could not edit upload preview: %s", safe_error(exc))
-        await self.tg.send_message(chat_id, text, reply_markup=limit_markup())
 
     async def handle_start(self, chat_id: int) -> None:
-        if is_running_phase(await self._safe_status()):
-            await self.send_status(chat_id)
-            return
-        staged = self.staged.get(chat_id)
-        if staged is None:
-            staged = await self.stage_latest(chat_id)
-        if staged is None:
+        current = await self._safe_status()
+        if is_running_phase(current):
             await self.tg.send_message(
                 chat_id,
-                "📂 Abhi koi company file nahi mili.\n\n"
-                "📎 → <b>File</b> se `.xlsx`, `.xlsm`, `.csv` ya `.json` bhejo, "
-                "phir <b>🚀 Start</b> dabao.",
-                reply_markup=reply_menu(),
+                "⏳ <b>Run already active</b>",
+                reply_markup=running_markup(),
             )
             return
-        await self.send_preview(chat_id, staged)
+
+        # Start is deliberately a clean hand-off: no old upload, no preview,
+        # no limit keyboard in Telegram.  The popup always opens on the empty
+        # upload card so the user uploads a fresh file for this run.
+        self.staged.pop(chat_id, None)
+        self.last_started.pop(chat_id, None)
+        try:
+            await self.api.reset_desktop()
+        except BotError as exc:
+            log.warning("Could not reset desktop upload state: %s", safe_error(exc))
+
+        try:
+            opened = await asyncio.to_thread(show_desktop_window, True)
+        except Exception as exc:  # noqa: BLE001
+            opened = False
+            log.warning("Could not open upload window: %s", safe_error(exc))
+
+        if not opened:
+            await self.tg.send_message(
+                chat_id,
+                "⚠️ Upload window open nahi hua. Edge/Chrome check karo, phir Start dabao.",
+            )
 
     async def _safe_status(self) -> dict[str, Any]:
         try:
@@ -1214,19 +1140,16 @@ class ApolloBot:
             run_id = str(started.get("run_id") or "")
             if run_id:
                 self.seen_runs.add(run_id)
-            # Open the laptop companion only after the run really started.
-            self._show_desktop_soon(force=True, run_id=run_id)
 
             self.last_started[chat_id] = (staged.path, limit)
-            text = (
-                "🚀 <b>Run start ho gaya</b>\n\n"
-                f"<b>Limit:</b> {limit} new companies\n"
-                f"<b>File:</b> {escape(staged.display_name)}\n\n"
-                "Chrome background me khulega. Telegram aur laptop popup "
-                "dono par live status update hoga."
-            )
+            try:
+                await self.api.close_desktop()
+            except BotError:
+                pass
             message = await self.tg.send_message(
-                chat_id, text, reply_markup=running_markup()
+                chat_id,
+                "🚀 <b>Run started</b>",
+                reply_markup=running_markup(),
             )
             self._ensure_watcher(chat_id, int(message["message_id"]))
         finally:
@@ -1341,6 +1264,9 @@ class ApolloBot:
             f"Guessed: {format_number(data.get('guessed'))} • "
             f"Credits: {format_number(data.get('credits'))}"
         )
+        coverage = coverage_text(data)
+        if coverage:
+            caption += f"\nCoverage: {coverage}"
         try:
             await self.tg.send_document(chat_id, path, caption=caption)
         except (BotError, TelegramError) as exc:
@@ -1436,21 +1362,24 @@ class ApolloBot:
             await self.welcome(chat_id)
 
     async def open_desktop(self, chat_id: int) -> None:
+        current = await self._safe_status()
+        if not is_running_phase(current):
+            try:
+                await self.api.reset_desktop()
+            except BotError as exc:
+                log.warning("Could not reset desktop upload state: %s", safe_error(exc))
         try:
             self._desktop_last_attempt = time.monotonic()
-            opened = await asyncio.to_thread(show_desktop_window)
+            opened = await asyncio.to_thread(
+                show_desktop_window, not is_running_phase(current)
+            )
             if not opened:
                 raise BotError("Edge/Chrome app window launch nahi hua.")
-            await self.tg.send_message(
-                chat_id,
-                "🖥️ <b>Laptop popup open kar diya.</b>\n\n"
-                "Wahin file upload karo ya live progress dekho; "
-                "Telegram par bhi updates aate rahenge.",
-            )
+            await self.tg.send_message(chat_id, "🖥️ <b>Upload window opened</b>")
         except Exception as exc:  # noqa: BLE001
             await self.tg.send_message(
                 chat_id,
-                f"⚠️ Laptop popup open nahi hua.\n\n{escape(shorten(safe_error(exc), 400))}",
+                f"⚠️ Upload window open nahi hua.\n{escape(shorten(safe_error(exc), 300))}",
             )
 
     async def _handle_callback(
@@ -1538,9 +1467,7 @@ class ApolloBot:
             try:
                 await self.tg.send_message(
                     int(saved),
-                    "🟢 <b>Apollo bot online hai.</b>\n"
-                    "Start dabao ya file bhejo — sab yahin se chalega.\n"
-                    "Laptop par live popup bhi khul raha hai.",
+                    "🟢 <b>Apollo bot online</b>\nStart dabao — fresh upload window khulega.",
                     reply_markup=reply_menu(),
                 )
             except (ValueError, TelegramError) as exc:

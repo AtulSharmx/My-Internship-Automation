@@ -1,5 +1,10 @@
 from apollo_tool.names import split_full_name
-from apollo_tool.patterns import guess_email, infer_pattern
+from apollo_tool.patterns import (
+    can_render_partial_name,
+    guess_email,
+    infer_pattern,
+    render_pattern,
+)
 from apollo_tool.runner import title_tier
 
 
@@ -88,6 +93,25 @@ def test_middle_name_pattern():
 
 def test_guess_email():
     assert guess_email("{first}.{last}", "Jane Doe", "acme.com") == "jane.doe@acme.com"
+
+
+def test_infer_last_initial_then_first_name():
+    match = infer_pattern("hmohammed@albaraka.bh", "Mohammed Halabi")
+    assert match is not None
+    assert match.template == "{l}{first}"
+    assert match.confidence == "low"
+    assert "unusual format" in match.note
+
+
+def test_partial_name_can_render_safe_patterns():
+    parts = split_full_name("Jamie F")
+    assert render_pattern("{first}", parts) == "jamie"
+    assert render_pattern("{first}{l}", parts) == "jamief"
+    assert render_pattern("{l}{first}", parts) == "fjamie"
+    assert render_pattern("{first}.{last}", parts) is None
+    assert can_render_partial_name("{first}", parts)
+    assert can_render_partial_name("{l}{first}", parts)
+    assert not can_render_partial_name("{first}.{last}", parts)
 
 
 def test_title_tiers():

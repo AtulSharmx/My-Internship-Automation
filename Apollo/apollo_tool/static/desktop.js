@@ -1,7 +1,8 @@
 const $ = (id) => document.getElementById(id);
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = ["xlsx", "xlsm", "csv", "json"];
+const CLOSE_DELAY_MS = 780;
 
 const state = {
   uploaded: null,
@@ -11,31 +12,34 @@ const state = {
   uploadSeq: 0,
   polling: false,
   pollTimer: null,
-  showResult: false,
-  dismissedUploadKey: "",
+  session: null,
+  lastRunning: null,
+  startedHere: false,
+  closing: false,
   toastHideTimer: null,
   toastRemoveTimer: null,
 };
 
-const statusPill = $("statusPill");
-const statusPillText = $("statusPillText");
-const uploadView = $("uploadView");
-const runView = $("runView");
+const uploadCard = $("uploadCard");
+const uploadState = $("uploadState");
+const runState = $("runState");
 const dropzone = $("dropzone");
 const fileInput = $("fileInput");
 const fileCard = $("fileCard");
-const fileBadge = $("fileBadge");
-const uploadProgressWrap = $("uploadProgressWrap");
-const uploadBar = $("uploadBar");
-const uploadPct = $("uploadPct");
-const uploadStatusText = $("uploadStatusText");
+const fileDetails = $("fileDetails");
 const uploadError = $("uploadError");
 const uploadErrorText = $("uploadErrorText");
-const fileDetails = $("fileDetails");
+const errorTitle = $("errorTitle");
 const idleHint = $("idleHint");
+const removeTaskBtn = $("removeTaskBtn");
 const startBtn = $("startBtn");
+const startBtnText = $("startBtnText");
+const startOverlay = $("startOverlay");
 const limitPicker = $("limitPicker");
+const uploadBar = $("uploadBar");
+const creditHint = $("creditHint");
 
+/* ------------------------------------------------------------------ helpers */
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   const text = await response.text();
@@ -60,20 +64,15 @@ function toast(message, isError = false) {
   requestAnimationFrame(() => el.classList.add("show"));
   state.toastHideTimer = setTimeout(() => {
     el.classList.remove("show");
-    state.toastRemoveTimer = setTimeout(() => { el.hidden = true; }, 180);
-  }, 3800);
+    state.toastRemoveTimer = setTimeout(() => { el.hidden = true; }, 200);
+  }, 3400);
 }
 
 function fmtBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function baseName(path) {
-  if (!path) return "";
-  return String(path).split(/[\\/]/).pop();
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function extensionOf(name) {
@@ -81,56 +80,24 @@ function extensionOf(name) {
   return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
-function fileIconLabel(name) {
+function extensionLabel(name) {
   const extension = extensionOf(name);
-  if (extension === "csv") return "CSV";
-  if (extension === "json") return "JSON";
-  return "XLS";
+  return extension ? `.${extension}` : "file";
 }
 
-function fmtElapsed(startedAt, finishedAt) {
-  if (!startedAt) return "0:00";
-  const start = new Date(startedAt).getTime();
-  if (Number.isNaN(start)) return "0:00";
-  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
-  if (Number.isNaN(end)) return "0:00";
-  const seconds = Math.max(0, Math.floor((end - start) / 1000));
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return h
-    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
-    : `${m}:${String(s).padStart(2, "0")}`;
+function baseName(path) {
+  if (!path) return "";
+  return String(path).split(/[\\/]/).pop();
 }
 
-function uploadIdentity(upload) {
-  if (!upload) return "";
-  return [upload.uploaded_at, upload.filename, upload.size].join("|");
-}
-
-function uploadKey(upload) {
-  if (!upload) return "";
-  return uploadIdentity(upload) + "|" + (upload.status || "");
-}
-
-function limitLabel(limit) {
-  return `${limit} ${limit === 1 ? "company" : "companies"}`;
-}
-
-/* ---------------------------------------------------------------- views */
-function showUploadView() {
-  uploadView.hidden = false;
-  runView.hidden = true;
-}
-
-function showRunView() {
-  uploadView.hidden = true;
-  runView.hidden = false;
-}
-
-function setPill(kind, text) {
-  statusPill.className = "pill " + kind;
-  statusPillText.textContent = text;
+function validateFile(file) {
+  if (!file) return "Choose a spreadsheet first.";
+  if (!ALLOWED_EXTENSIONS.includes(extensionOf(file.name))) {
+    return "Use an .xlsx, .xlsm, .csv or .json file.";
+  }
+  if (!file.size) return "That file is empty.";
+  if (file.size > MAX_UPLOAD_BYTES) return "That file is larger than 10 MB.";
+  return "";
 }
 
 function setLimit(limit) {
@@ -141,11 +108,11 @@ function setLimit(limit) {
   });
   const domains = state.uploaded ? Number(state.uploaded.unique_domains || 0) : 0;
   if (!state.limit) {
-    $("creditHint").textContent = "Choose a credit limit before starting.";
+    creditHint.textContent = "Select a limit";
   } else {
-    $("creditHint").textContent = domains
-      ? `Up to ${Math.min(state.limit, domains)} Apollo email credits may be used.`
-      : "Up to " + limitLabel(state.limit) + " may be processed.";
+    creditHint.textContent = domains
+      ? `Up to ${Math.min(state.limit, domains)} this run`
+      : "Ready to start";
   }
   updateStartState();
 }
@@ -155,111 +122,105 @@ function updateStartState() {
   const uploading = !!state.uploadXhr;
   const domains = state.uploaded ? Number(state.uploaded.unique_domains || 0) : 0;
   startBtn.disabled = running || uploading || !state.uploaded || !domains || !state.limit;
-  if (uploading) $("startBtnText").textContent = "Uploading…";
-  else if (running) $("startBtnText").textContent = "Run in progress";
-  else if (!state.limit) $("startBtnText").textContent = "Choose a limit";
-  else $("startBtnText").textContent = "Start run";
+  if (uploading) startBtnText.textContent = "Uploading…";
+  else if (running) startBtnText.textContent = "Run in progress";
+  else if (!state.uploaded) startBtnText.textContent = "Upload a file";
+  else if (!state.limit) startBtnText.textContent = "Choose a limit";
+  else startBtnText.textContent = "Start run";
   $("removeFileBtn").disabled = running || uploading;
-  $("replaceFileBtn").disabled = running || uploading;
+  $("chooseAnotherBtn").disabled = running || uploading;
+  removeTaskBtn.disabled = running || uploading;
 }
 
-/* ---------------------------------------------------------------- upload */
-function validateFile(file) {
-  if (!file) return "Choose a spreadsheet first.";
-  if (!ALLOWED_EXTENSIONS.includes(extensionOf(file.name))) {
-    return "Use an .xlsx, .xlsm, .csv or .json file.";
-  }
-  if (!file.size) return "That file is empty.";
-  if (file.size > MAX_UPLOAD_BYTES) return "That file is larger than 25 MB.";
-  return "";
+/* ------------------------------------------------------------------ views */
+function showUploadView() {
+  uploadState.hidden = false;
+  runState.hidden = true;
 }
 
-function resetUploadState(dismissCurrent = false) {
+function showRunView() {
+  uploadState.hidden = true;
+  runState.hidden = false;
+}
+
+function showStartOverlay() {
+  // Keep the upload view mounted underneath: it gives the card its height, so
+  // the overlay stays centered instead of collapsing to the card padding.
+  startOverlay.hidden = false;
+  runState.hidden = true;
+}
+
+function resetUploadState() {
   state.uploadSeq += 1;
   if (state.uploadXhr) {
     try { state.uploadXhr.abort(); } catch (_) { /* already finished */ }
     state.uploadXhr = null;
   }
-  if (dismissCurrent && state.uploaded) {
-    state.dismissedUploadKey = uploadKey(state.uploaded);
-  }
   state.uploaded = null;
   state.limit = 0;
   fileInput.value = "";
   dropzone.hidden = false;
+  dropzone.classList.remove("is-dragging");
   fileCard.hidden = true;
   fileCard.classList.remove("is-uploading", "is-ready", "is-error");
-  uploadProgressWrap.hidden = false;
+  fileCard.style.animation = "";
   uploadBar.style.width = "0%";
-  uploadPct.textContent = "0%";
-  uploadStatusText.textContent = "Uploading spreadsheet…";
+  fileDetails.hidden = true;
+  removeTaskBtn.hidden = true;
   uploadError.hidden = true;
   uploadErrorText.textContent = "";
-  fileDetails.hidden = true;
   idleHint.hidden = false;
+  [...limitPicker.querySelectorAll("[data-limit]")].forEach((button) => {
+    button.classList.remove("is-active");
+  });
+  creditHint.textContent = "Select a limit";
   updateStartState();
 }
 
-function setUploadProgress(percent, label) {
-  const value = Math.max(0, Math.min(100, percent));
-  uploadBar.style.width = `${value}%`;
-  uploadPct.textContent = `${Math.round(value)}%`;
-  if (label) uploadStatusText.textContent = label;
-}
-
+/* ------------------------------------------------------------------ upload */
 function beginUpload(file) {
   const validation = validateFile(file);
   if (validation) {
     toast(validation, true);
     return;
   }
+
   const seq = ++state.uploadSeq;
   if (state.uploadXhr) {
     try { state.uploadXhr.abort(); } catch (_) { /* already finished */ }
   }
   state.uploaded = null;
   state.limit = 0;
-  state.dismissedUploadKey = "";
   uploadError.hidden = true;
   uploadErrorText.textContent = "";
+
   dropzone.hidden = true;
   fileCard.hidden = false;
   fileCard.classList.remove("is-ready", "is-error");
   fileCard.classList.add("is-uploading");
   fileDetails.hidden = true;
+  removeTaskBtn.hidden = false;
   idleHint.hidden = true;
-  uploadProgressWrap.hidden = false;
-  uploadBar.style.width = "0%";
-  uploadPct.textContent = "0%";
-  uploadStatusText.textContent = "Uploading spreadsheet…";
-  fileBadge.className = "soft-badge";
-  fileBadge.textContent = "Uploading";
-  $("fileIcon").textContent = fileIconLabel(file.name);
   $("fileName").textContent = file.name;
-  $("fileMeta").textContent = `${fmtBytes(file.size)} · reading workbook`;
+  $("fileMeta").textContent = `Uploading… ${fmtBytes(file.size)}`;
+  uploadBar.style.width = "0%";
   updateStartState();
 
   const form = new FormData();
   form.append("file", file);
   form.append("source", "desktop");
+
   const xhr = new XMLHttpRequest();
   state.uploadXhr = xhr;
   const startedAt = performance.now();
-  let lastPercent = 0;
-
-  const update = (percent, label) => {
-    if (seq !== state.uploadSeq) return;
-    lastPercent = Math.max(lastPercent, percent);
-    setUploadProgress(lastPercent, label);
-  };
 
   xhr.upload.addEventListener("progress", (event) => {
-    if (!event.lengthComputable) {
-      update(24, "Uploading spreadsheet…");
-      return;
-    }
-    const pct = Math.min(86, Math.round((event.loaded / event.total) * 86));
-    update(Math.max(8, pct), "Uploading spreadsheet…");
+    if (seq !== state.uploadSeq) return;
+    const percent = event.lengthComputable
+      ? Math.min(86, Math.round((event.loaded / event.total) * 86))
+      : 26;
+    uploadBar.style.width = `${Math.max(6, percent)}%`;
+    $("fileMeta").textContent = `Uploading… ${Math.max(6, percent)}%`;
   });
 
   xhr.addEventListener("load", () => {
@@ -267,8 +228,9 @@ function beginUpload(file) {
     let payload = null;
     try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch (_) { payload = null; }
     if (xhr.status >= 200 && xhr.status < 300 && payload && payload.path) {
-      update(100, "Reading workbook…");
-      const wait = Math.max(0, 850 - (performance.now() - startedAt));
+      uploadBar.style.width = "100%";
+      $("fileMeta").textContent = "Reading workbook…";
+      const wait = Math.max(0, 520 - (performance.now() - startedAt));
       setTimeout(() => {
         if (seq === state.uploadSeq) completeUpload(payload);
       }, wait);
@@ -283,245 +245,200 @@ function beginUpload(file) {
     failUpload("Could not reach the local app. Is it still running?", seq);
   });
 
+  xhr.addEventListener("abort", () => {
+    if (seq === state.uploadSeq) state.uploadXhr = null;
+  });
+
   xhr.open("POST", "/api/upload");
   xhr.send(form);
-  state.uploadXhr = xhr;
 }
 
 function completeUpload(data) {
   state.uploadXhr = null;
-  state.limit = 0;
   state.uploaded = { ...data, size: Number(data.size || 0) };
-  state.dismissedUploadKey = "";
-  renderReadyFile(state.uploaded);
-  toast("File uploaded");
+  state.limit = 0;
+
+  fileCard.hidden = false;
+  fileCard.classList.remove("is-uploading", "is-error");
+  fileCard.classList.add("is-ready");
+  dropzone.hidden = true;
+  $("fileName").textContent = data.filename || baseName(data.path) || "Spreadsheet";
+  $("fileMeta").textContent = `${extensionLabel(data.filename || data.path)} | ${fmtBytes(data.size)}`;
+  uploadError.hidden = true;
+  uploadErrorText.textContent = "";
+  fileDetails.hidden = false;
+  removeTaskBtn.hidden = false;
+  idleHint.hidden = true;
+  [...limitPicker.querySelectorAll("[data-limit]")].forEach((button) => {
+    button.classList.remove("is-active");
+  });
+  creditHint.textContent = "Select a limit";
+  updateStartState();
 }
 
 function failUpload(message, seq) {
   if (seq !== state.uploadSeq) return;
   state.uploadXhr = null;
   state.uploaded = null;
+  fileCard.hidden = true;
   fileCard.classList.remove("is-uploading", "is-ready");
-  fileCard.classList.add("is-error");
-  fileBadge.className = "soft-badge error";
-  fileBadge.textContent = "Failed";
-  uploadProgressWrap.hidden = true;
+  dropzone.hidden = false;
+  fileDetails.hidden = true;
+  removeTaskBtn.hidden = true;
+  idleHint.hidden = false;
+  errorTitle.textContent = "Could not read this file";
   uploadErrorText.textContent = message;
   uploadError.hidden = false;
-  fileDetails.hidden = true;
-  idleHint.hidden = true;
   updateStartState();
   toast(message, true);
 }
 
-function renderReadyFile(data) {
-  fileCard.hidden = false;
-  dropzone.hidden = true;
-  fileCard.classList.remove("is-uploading", "is-error");
-  fileCard.classList.add("is-ready");
-  fileBadge.className = "soft-badge ready";
-  fileBadge.textContent = "Ready";
-  $("fileIcon").textContent = fileIconLabel(data.filename || data.path);
-  $("fileName").textContent = data.filename || baseName(data.path);
-  $("fileMeta").textContent = `${fmtBytes(data.size)} · ${data.sheet || "Sheet"}`;
-  uploadProgressWrap.hidden = true;
-  uploadError.hidden = true;
-  uploadErrorText.textContent = "";
-  $("summaryRows").textContent = data.rows || 0;
-  $("summaryDomains").textContent = data.unique_domains || 0;
-  $("summaryColumns").textContent = (data.columns || []).length;
-  fileDetails.hidden = false;
-  idleHint.hidden = true;
-  setLimit(state.limit);
-  updateStartState();
-}
-
-function renderUploading(data) {
-  if (!data) return;
-  dropzone.hidden = true;
-  fileCard.hidden = false;
-  fileCard.classList.remove("is-ready", "is-error");
-  fileCard.classList.add("is-uploading");
-  fileBadge.className = "soft-badge";
-  fileBadge.textContent = "Uploading";
-  $("fileIcon").textContent = fileIconLabel(data.filename);
-  $("fileName").textContent = data.filename || "Uploading file…";
-  $("fileMeta").textContent = [fmtBytes(data.size), "reading workbook"].filter(Boolean).join(" · ");
-  uploadProgressWrap.hidden = false;
-  uploadBar.style.width = "45%";
-  uploadPct.textContent = "…";
-  uploadStatusText.textContent = data.source === "telegram" ? "Receiving file from Telegram…" : "Uploading spreadsheet…";
-  fileDetails.hidden = true;
-  idleHint.hidden = true;
-  updateStartState();
-}
-
-/* ---------------------------------------------------------------- status */
-function applyLastUpload(upload) {
-  if (!upload) return;
-  const identity = uploadIdentity(upload);
-  const key = uploadKey(upload);
-  if (key === state.dismissedUploadKey) return;
-  if (upload.status === "uploading") {
-    if (!state.uploadXhr) renderUploading(upload);
-    return;
-  }
-  if (upload.status === "ready") {
-    if (state.uploadXhr) return;
-    if (state.uploaded && uploadIdentity(state.uploaded) === identity) return;
-    state.uploaded = upload;
-    state.limit = 0;
-    renderReadyFile(upload);
-    return;
-  }
-  if (upload.status === "error" && !state.uploadXhr) {
-    dropzone.hidden = true;
-    fileCard.hidden = false;
-    fileCard.classList.remove("is-uploading", "is-ready");
-    fileCard.classList.add("is-error");
-    fileBadge.className = "soft-badge error";
-    fileBadge.textContent = "Failed";
-    $("fileName").textContent = upload.filename || "File";
-    $("fileMeta").textContent = "Upload failed";
-    uploadProgressWrap.hidden = true;
-    uploadErrorText.textContent = upload.error || "The file could not be read.";
-    uploadError.hidden = false;
-    fileDetails.hidden = true;
-    idleHint.hidden = true;
+async function removeFile() {
+  if (state.status && state.status.running) return;
+  resetUploadState();
+  try {
+    await api("/api/dismiss-upload", { method: "POST" });
+  } catch (error) {
+    console.warn(error.message);
   }
 }
 
-function setRunPill(data) {
-  const running = !!data.running;
-  const phase = data.phase || "idle";
-  if (running) {
-    setPill("running", phase === "stopping" ? "Stopping" : "Running");
-  } else if (phase === "done") {
-    setPill("done", "Finished");
-  } else if (phase === "error") {
-    setPill("error", "Error");
-  } else if (phase === "stopped") {
-    setPill("stopped", "Stopped");
-  } else {
-    setPill("idle", "Idle");
-  }
+/* ------------------------------------------------------------------ status */
+function fmtElapsed(startedAt, finishedAt) {
+  if (!startedAt) return "0:00";
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return "0:00";
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
+  const seconds = Math.max(0, Math.floor((end - start) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return hours
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+    : `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
 function renderRun(data) {
   const running = !!data.running;
-  const phase = data.phase || "idle";
   const planned = Number(data.planned || 0);
   const handled = Number(data.handled || 0);
   const pct = planned > 0
     ? Math.min(100, Math.round((handled / planned) * 100))
     : (!running && data.output_path ? 100 : 0);
-  const done = !running && (phase === "done" || phase === "stopped" || phase === "error");
 
-  $("progressBar").style.width = pct + "%";
-  $("progressCount").textContent = `${handled} / ${planned || 0} companies`;
-  $("runElapsed").textContent = fmtElapsed(data.started_at, done ? data.finished_at : null);
+  $("runPct").textContent = `${pct}%`;
+  $("runBar").style.width = `${pct}%`;
+  $("runTitle").textContent = running ? "Apollo is working" : "Run finished";
+  $("currentCompany").textContent = data.current_company
+    ? `${data.current_company}${data.current_domain ? " · " + data.current_domain : ""}`
+    : running ? "Preparing Chrome…" : "Workbook saved.";
   $("statHandled").textContent = handled;
-  $("statCredits").textContent = data.credits || 0;
   $("statVerified").textContent = data.verified || 0;
   $("statGuessed").textContent = data.guessed || 0;
+  $("statCredits").textContent = data.credits || 0;
+  $("runTitle").title = fmtElapsed(data.started_at, running ? null : data.finished_at);
 
-  const title = running
-    ? (phase === "stopping" ? "Stopping after this company" : "Processing companies")
-    : phase === "done" ? "Run complete" : phase === "error" ? "Run needs attention" : "Run stopped";
-  $("runTitle").textContent = title;
-  $("phaseChip").textContent = running ? "Live" : (data.status_text || (phase === "done" ? "Finished" : phase));
-  $("phaseChip").className = "phase-chip " + (running ? "running" : phase === "done" ? "done" : phase === "error" ? "error" : "stopped");
-
-  if (data.current_company) {
-    $("currentCompany").textContent = `${data.current_company}${data.current_domain ? " · " + data.current_domain : ""}`;
-  } else {
-    $("currentCompany").textContent = running ? "Preparing…" : (data.output_path ? "Workbook ready." : "No active run.");
+  const errorLine = data.last_error || data.challenge || "";
+  if (errorLine && !running) {
+    $("currentCompany").textContent = String(errorLine).slice(0, 120);
   }
-
-  const logs = data.logs || [];
-  const last = logs.length ? String(logs[logs.length - 1]) : "";
-  $("activityLine").textContent = last || (running ? "Waiting for the first update…" : "Ready.");
-  $("activityLine").title = last;
-
-  const challenge = !!data.challenge;
-  const login = !!data.login_required;
-  $("challengeBox").hidden = !(challenge || login || (!running && data.last_error));
-  if (!$("challengeBox").hidden) {
-    $("challengeTitle").textContent = challenge ? "Apollo challenge" : login ? "Apollo login needed" : "Run error";
-    $("challengeText").textContent = challenge
-      ? "Chrome was brought to the front. Solve the challenge, then start again."
-      : login
-        ? "Log in in the Chrome window, then start again."
-        : data.last_error || "The run stopped.";
-  }
-
-  $("stopBtn").hidden = !running;
-  $("stopBtn").disabled = !running || phase === "stopping";
-  $("stopBtn").textContent = phase === "stopping" ? "Stopping…" : "Stop run";
-  $("showBrowserBtn").hidden = !data.browser_open || running;
-  $("showBrowserBtn").disabled = !data.browser_open;
-  $("newRunBtn").hidden = running;
-
-  const outputPath = data.output_path && !running ? data.output_path : "";
-  $("outputCard").hidden = !outputPath;
-  if (outputPath) $("outputName").textContent = baseName(outputPath);
-  updateStartState();
 }
 
 function renderStatus(data) {
-  const wasRunning = !!(state.status && state.status.running);
   state.status = data;
-  setRunPill(data);
-  if (
-    wasRunning &&
-    !data.running &&
-    ["done", "stopped", "error"].includes(String(data.phase || ""))
-  ) {
-    state.showResult = true;
+  const session = Number(data.desktop_session ?? 0);
+
+  if (state.session === null) {
+    state.session = session;
+  } else if (session !== state.session) {
+    state.session = session;
+    if (!state.startedHere && !data.running) {
+      resetUploadState();
+      showUploadView();
+      state.lastRunning = false;
+    }
+  }
+
+  if (state.startedHere || state.closing) {
+    showStartOverlay();
+    state.lastRunning = !!data.running;
+    return;
   }
 
   if (data.running) {
-    state.showResult = false;
+    const justStarted = state.lastRunning === false;
+    state.lastRunning = true;
+    if (justStarted) {
+      // A run was started from another surface while this uploader was open.
+      // Close the uploader exactly like a start from this window.
+      state.startedHere = true;
+      showStartOverlay();
+      scheduleClose();
+      return;
+    }
     showRunView();
     renderRun(data);
     return;
   }
 
-  const upload = data.last_upload;
-  const incomingKey = uploadKey(upload);
-  if (
-    upload &&
-    incomingKey !== state.dismissedUploadKey &&
-    (!state.uploaded || incomingKey !== uploadKey(state.uploaded))
-  ) {
-    // A new file arrived from Telegram (or another local window).  Leave the
-    // completed-run card and show the new upload instead of hiding it.
-    state.showResult = false;
-  }
-
-  if (state.showResult) {
-    showRunView();
-    renderRun(data);
-    return;
-  }
-
-  if (upload && (upload.status === "uploading" || upload.status === "error")) {
-    showUploadView();
-    applyLastUpload(upload);
-    return;
-  }
-  if (upload && upload.status === "ready") {
-    showUploadView();
-    applyLastUpload(upload);
-    return;
-  }
-
+  state.lastRunning = false;
   showUploadView();
-  renderRun(data);
   updateStartState();
 }
 
-/* ---------------------------------------------------------------- actions */
+/* ------------------------------------------------------------------ start + close */
+function scheduleClose() {
+  if (state.closing) return;
+  state.closing = true;
+  clearTimeout(state.pollTimer);
+  setTimeout(() => {
+    uploadCard.classList.add("is-closing");
+    fetch("/api/desktop/close", { method: "POST", keepalive: true }).catch(() => {});
+    setTimeout(() => {
+      try { window.close(); } catch (_) { /* app mode is closed by the local app */ }
+    }, 480);
+  }, CLOSE_DELAY_MS);
+}
+
+async function startRun() {
+  if (!state.uploaded) {
+    toast("Upload a spreadsheet first.", true);
+    return;
+  }
+  if (!state.limit) {
+    toast("Choose a limit first.", true);
+    return;
+  }
+  if (!state.uploaded.unique_domains) {
+    toast("This file has no usable company domains.", true);
+    return;
+  }
+
+  startBtn.disabled = true;
+  startBtnText.textContent = "Starting…";
+
+  try {
+    await api("/api/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        path: state.uploaded.path,
+        limit: state.limit,
+        dry_run: false,
+        hide_browser: true,
+      }),
+    });
+    state.startedHere = true;
+    showStartOverlay();
+    scheduleClose();
+  } catch (error) {
+    toast(error.message, true);
+    startBtn.disabled = false;
+    updateStartState();
+  }
+}
+
+/* ------------------------------------------------------------------ events */
 dropzone.addEventListener("click", () => fileInput.click());
 dropzone.addEventListener("keydown", (event) => {
   if (event.key === "Enter" || event.key === " ") {
@@ -544,11 +461,13 @@ fileInput.addEventListener("change", (event) => {
     if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
   });
 });
+
 dropzone.addEventListener("dragleave", (event) => {
   event.preventDefault();
   event.stopPropagation();
   dropzone.classList.remove("is-dragging");
 });
+
 dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   event.stopPropagation();
@@ -557,19 +476,13 @@ dropzone.addEventListener("drop", (event) => {
   if (file) beginUpload(file);
 });
 
-$("removeFileBtn").addEventListener("click", async (event) => {
-  event.stopPropagation();
-  if (state.status && state.status.running) return;
-  resetUploadState(true);
-  try {
-    await api("/api/dismiss-upload", { method: "POST" });
-  } catch (error) {
-    // The local file card is already gone; a stale server preview will be
-    // ignored by the upload key on the next poll.
-    console.warn(error.message);
-  }
+["dragover", "drop"].forEach((name) => {
+  window.addEventListener(name, (event) => event.preventDefault());
 });
-$("replaceFileBtn").addEventListener("click", () => fileInput.click());
+
+$("removeFileBtn").addEventListener("click", removeFile);
+$("removeTaskBtn").addEventListener("click", removeFile);
+$("chooseAnotherBtn").addEventListener("click", () => fileInput.click());
 $("retryUploadBtn").addEventListener("click", () => fileInput.click());
 
 limitPicker.addEventListener("click", (event) => {
@@ -578,94 +491,18 @@ limitPicker.addEventListener("click", (event) => {
   setLimit(Number(button.dataset.limit));
 });
 
-startBtn.addEventListener("click", async () => {
-  if (!state.uploaded) {
-    toast("Upload a spreadsheet first.", true);
-    return;
-  }
-  if (!state.limit) {
-    toast("Choose a credit limit first.", true);
-    return;
-  }
-  if (!state.uploaded.unique_domains) {
-    toast("This file has no usable company domains.", true);
-    return;
-  }
-  startBtn.disabled = true;
-  $("startBtnText").textContent = "Starting…";
-  try {
-    await api("/api/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        path: state.uploaded.path,
-        limit: state.limit,
-        dry_run: false,
-        hide_browser: true,
-      }),
-    });
-    state.showResult = false;
-    showRunView();
-    await poll();
-  } catch (error) {
-    toast(error.message, true);
-  } finally {
-    updateStartState();
-  }
-});
+startBtn.addEventListener("click", startRun);
 
-$("stopBtn").addEventListener("click", async () => {
-  const button = $("stopBtn");
-  button.disabled = true;
-  button.textContent = "Stopping…";
-  try {
-    await api("/api/stop", { method: "POST" });
-    toast("Stopping after the current company");
-    await poll();
-  } catch (error) {
-    toast(error.message, true);
-    button.disabled = false;
-  }
-});
-
-$("showBrowserBtn").addEventListener("click", async () => {
-  try {
-    await api("/api/show-browser", { method: "POST" });
-    toast("Chrome window restored");
-    await poll();
-  } catch (error) {
-    toast(error.message, true);
-  }
-});
-
-$("openFolderBtn").addEventListener("click", async () => {
-  try {
-    await api("/api/reveal-output", { method: "POST" });
-  } catch (error) {
-    toast(error.message, true);
-  }
-});
-
-$("newRunBtn").addEventListener("click", () => {
-  state.showResult = false;
-  state.limit = 0;
-  showUploadView();
-  if (state.uploaded) renderReadyFile(state.uploaded);
-  else resetUploadState(false);
-  poll();
-});
-
-/* ---------------------------------------------------------------- poll */
+/* ------------------------------------------------------------------ poll */
 async function poll() {
-  if (state.polling) return;
+  if (state.polling || state.closing) return;
   state.polling = true;
   try {
     const data = await api("/api/status");
     renderStatus(data);
     clearTimeout(state.pollTimer);
-    state.pollTimer = setTimeout(poll, data.running ? 600 : 700);
+    state.pollTimer = setTimeout(poll, data.running ? 650 : 850);
   } catch (error) {
-    setPill("error", "Offline");
     clearTimeout(state.pollTimer);
     state.pollTimer = setTimeout(poll, 1600);
   } finally {
@@ -673,10 +510,10 @@ async function poll() {
   }
 }
 
-/* ---------------------------------------------------------------- init */
+/* ------------------------------------------------------------------ init */
 (function init() {
   setLimit(0);
+  resetUploadState();
   showUploadView();
-  resetUploadState(false);
   poll();
 })();

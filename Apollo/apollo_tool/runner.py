@@ -9,7 +9,7 @@ import re
 import time
 import traceback
 import uuid
-from collections import deque
+from collections import Counter, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,7 +28,14 @@ from .email_check import MXChecker, validate_email
 from .excel_io import InputWorkbook, read_input, write_output
 from .models import CompanyFacts, CompanyResult, InputRow, Person, RunSummary
 from .names import split_full_name
-from .patterns import email_domain, guess_email, infer_pattern, is_free_email_domain
+from .patterns import (
+    TEMPLATE_BY_DESCRIPTION,
+    can_render_partial_name,
+    email_domain,
+    guess_email,
+    infer_pattern,
+    is_free_email_domain,
+)
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +65,8 @@ class RunState:
     verified: int = 0
     guessed: int = 0
     masked: int = 0
+    people_found: int = 0
+    people_covered: int = 0
     skipped: int = 0
     errors: int = 0
     limit: int = 0
@@ -157,6 +166,165 @@ def select_candidate(people: list[Person]) -> tuple[Person | None, str]:
             notes.append(f"fell back to title tier {tier}")
         return chosen, "; ".join(notes)
     return None, "no full-name candidate with an available email (all masked on the Free plan)"
+
+
+def _rendered_email_counts(
+    people: list[Person], template: str, domain: str
+) -> dict[str, int]:
+    """Count how many contacts would produce each address under a pattern.
+
+    A count above one means the guess is ambiguous. Masked teammates whose
+    first name (or initial combination) collides with another contact are left
+    blank instead of being given a duplicate address.
+    """
+    counts: dict[str, int] = {}
+    for person in people:
+        if not person.full_name:
+            continue
+        email = guess_email(template, person.full_name, domain)
+        if email:
+            counts[email] = counts.get(email, 0) + 1
+    return counts
+
+
+def _skip_person(person: Person, message: str, reason: str) -> bool:
+    person.email = ""
+    person.source = ""
+    person.validation = message
+    person.confidence = "n/a"
+    person.reason = reason
+    return False
+
+
+def _guess_from_pattern(
+    person: Person,
+    template: str,
+    pattern_confidence: str,
+    domain: str,
+    mx: MXChecker,
+    rendered_counts: dict[str, int],
+) -> bool:
+    """Fill one person's email from a company pattern.
+
+    Returns True when an email was assigned. A masked/incomplete name is only
+    guessed when the pattern can be rendered without the full last name; those
+    guesses are always low confidence and are skipped when the address would be
+    ambiguous (for example two masked people with the same first name).
+    """
+    parts = split_full_name(person.full_name)
+    if not parts.first:
+        return _skip_person(
+            person,
+            "skipped: contact has no usable first name",
+            "incomplete_name",
+        )
+
+    partial = person.masked or not parts.usable
+    if partial:
+        if not can_render_partial_name(template, parts):
+            if person.masked:
+                return _skip_person(
+                    person,
+                    "skipped: pattern needs the full last name; Apollo masked this contact",
+                    "masked_name",
+                )
+            return _skip_person(
+                person,
+                "skipped: pattern needs the full name; this contact is incomplete",
+                "incomplete_name",
+            )
+        email = guess_email(template, person.full_name, domain)
+        if not email:
+            return _skip_person(
+                person,
+                "skipped: name could not be rendered with the pattern",
+                "render_failed",
+            )
+        if rendered_counts.get(email, 0) > 1:
+            reason = (
+                "duplicate_first_name" if template == "{first}" else "duplicate_rendered_email"
+            )
+            message = (
+                "skipped: duplicate first name; masked contact cannot be disambiguated"
+                if reason == "duplicate_first_name"
+                else "skipped: rendered email would collide with another contact"
+            )
+            return _skip_person(person, message, reason)
+        validation = validate_email(email, mx)
+        person.email = email
+        person.source = "guessed"
+        person.validation = "partial name; " + validation.validation
+        person.confidence = "low"
+        person.reason = "partial_name_guess"
+        return True
+
+    email = guess_email(template, person.full_name, domain)
+    if not email:
+        return _skip_person(
+            person,
+            "skipped: name could not be rendered with the pattern",
+            "render_failed",
+        )
+
+    validation = validate_email(email, mx)
+    person.email = email
+    person.source = "guessed"
+    person.validation = validation.validation
+    duplicate_first = template == "{first}" and rendered_counts.get(email, 0) > 1
+    if duplicate_first:
+        person.validation += "; duplicate first name in team"
+        person.confidence = "low"
+    else:
+        person.confidence = (
+            "high"
+            if pattern_confidence == "high" and validation.confidence == "high"
+            else "low"
+        )
+    person.reason = "pattern_guess"
+    return True
+
+
+def reenrich_result(result: CompanyResult, mx: MXChecker) -> int:
+    """Re-fill teammates on a saved result after the pattern engine improves.
+
+    Older database rows already contain the revealed name/email but may have
+    been written before a format was understood. This runs when output is
+    rebuilt, so no new Apollo credit is spent.
+    """
+    if result.dry_run or not result.email or not result.revealed_name:
+        return 0
+
+    match = infer_pattern(result.email, result.revealed_name)
+    if match is not None:
+        template = match.template
+        pattern_confidence = match.confidence
+        result.pattern = match.description
+        result.pattern_note = match.note
+    else:
+        template = TEMPLATE_BY_DESCRIPTION.get(result.pattern or "", "")
+        pattern_confidence = "low"
+    if not template:
+        return 0
+
+    domain = email_domain(result.email) or result.domain
+    counts = _rendered_email_counts(result.people, template, domain)
+    # Reserve the verified address too: a masked teammate must never be given
+    # the same address as the person Apollo already revealed.
+    if result.email:
+        counts[result.email.lower()] = counts.get(result.email.lower(), 0) + 1
+    filled = 0
+    for person in result.people:
+        if person.email:
+            continue
+        if _guess_from_pattern(person, template, pattern_confidence, domain, mx, counts):
+            filled += 1
+    if filled:
+        note = (
+            f"re-enriched {filled} teammate(s) with the stored "
+            f"{result.pattern or template} pattern"
+        )
+        result.notes = f"{result.notes}; {note}" if result.notes else note
+    return filled
 
 
 class RunManager:
@@ -422,6 +590,7 @@ class RunManager:
                 self._log(f"Could not record run history: {exc}")
             if not keep_browser:
                 await self.browser.close()
+                self._log("Chrome closed after the run")
             else:
                 # Restore the window on challenge/login/capture failures so the
                 # user can review or solve the screen that stopped the run.
@@ -550,6 +719,7 @@ class RunManager:
             result = self._build_dry_result(row, people, candidate, candidate_note, facts)
             self._dry_results[domain] = result
             self.state.masked += result.masked_count
+            self.state.people_found += len(people)
             if candidate:
                 self._log(f"DRY RUN: would reveal {candidate.full_name}, no credit spent")
             else:
@@ -567,9 +737,11 @@ class RunManager:
                 person.confidence = "n/a"
                 person.source = ""
                 person.email = ""
+                person.reason = "masked_name" if person.masked else "no_candidate"
             self.db.mark_no_candidate(domain, company_name, wfid, notes, facts, people, run_id)
             self.state.skipped += 1
             self.state.masked += masked_count
+            self.state.people_found += len(people)
             self._log("No candidate - ledger marked no_candidate (0 credits)")
             return
 
@@ -641,7 +813,13 @@ class RunManager:
             )
             guessed = sum(1 for p in enriched_people if p.source == "guessed" and p.email)
             low = sum(1 for p in enriched_people if p.source == "guessed" and p.confidence == "low")
-            masked = sum(1 for p in enriched_people if p.masked)
+            partial = sum(
+                1
+                for p in enriched_people
+                if p.reason == "partial_name_guess" and p.email
+            )
+            masked = sum(1 for p in enriched_people if p.masked and not p.email)
+            covered = sum(1 for p in enriched_people if p.email)
             credit_delta = reveal.credit_delta
             credit_spent = 1 if not credit_delta else credit_delta
 
@@ -654,6 +832,7 @@ class RunManager:
                 len(enriched_people),
                 guessed,
                 low,
+                partial,
                 masked,
                 candidate_note,
                 reveal,
@@ -697,8 +876,11 @@ class RunManager:
         self.state.guessed += guessed
         self.state.verified += 1
         self.state.masked += masked
+        self.state.people_found += len(enriched_people)
+        self.state.people_covered += covered
         self._log(
-            f"saved: verified={reveal.email} | guessed={guessed} (low={low}) | masked={masked}"
+            f"saved: verified={reveal.email} | guessed={guessed} (low={low}, "
+            f"partial={partial}) | masked={masked}"
         )
 
     def _absolute_person(self, href: str) -> str:
@@ -721,6 +903,15 @@ class RunManager:
     ) -> list[Person]:
         found_candidate = False
         result: list[Person] = []
+        rendered_counts = (
+            _rendered_email_counts(people, template, domain) if template else {}
+        )
+        if reveal.email:
+            # The verified address is reserved even if the candidate's old
+            # masked row happens to render a different local part.
+            rendered_counts[reveal.email.lower()] = (
+                rendered_counts.get(reveal.email.lower(), 0) + 1
+            )
         for person in people:
             if person.person_key == candidate.person_key or (
                 person.href and candidate.href and person.href.split("?")[0] == candidate.href.split("?")[0]
@@ -743,47 +934,52 @@ class RunManager:
                 result.append(person)
                 continue
 
-            if person.masked or not split_full_name(person.full_name).usable:
-                person.email = ""
-                person.source = ""
-                person.validation = (
-                    "skipped: last name masked by Apollo Free plan"
-                    if person.masked
-                    else "skipped: contact name is incomplete (single name or initial-only last name)"
-                )
-                person.confidence = "n/a"
-                person.reason = "masked_name" if person.masked else "incomplete_name"
-                result.append(person)
+            if not person.full_name and not person.name_raw:
                 continue
 
             if not template:
                 person.email = ""
                 person.source = ""
-                person.validation = "skipped: no company pattern could be derived"
+                if person.masked:
+                    person.validation = "skipped: last name masked by Apollo Free plan"
+                    person.reason = "masked_name"
+                elif not split_full_name(person.full_name).usable:
+                    person.validation = (
+                        "skipped: contact name is incomplete (single name or initial-only last name)"
+                    )
+                    person.reason = "incomplete_name"
+                else:
+                    person.validation = "skipped: no company pattern could be derived"
+                    person.reason = "no_pattern"
                 person.confidence = "n/a"
-                person.reason = "no_pattern"
                 result.append(person)
                 continue
 
-            guessed_email = guess_email(template, person.full_name, domain)
-            if not guessed_email:
-                person.email = ""
-                person.source = ""
-                person.validation = "skipped: name could not be rendered with the pattern"
-                person.confidence = "n/a"
-                person.reason = "render_failed"
+            if _guess_from_pattern(
+                person,
+                template,
+                pattern_confidence,
+                domain,
+                self._mx,
+                rendered_counts,
+            ):
                 result.append(person)
                 continue
-            validation = validate_email(guessed_email, self._mx)
-            person.email = guessed_email
-            person.source = "guessed"
-            person.validation = validation.validation
-            person.confidence = (
-                "high"
-                if pattern_confidence == "high" and validation.confidence == "high"
-                else "low"
+
+            if person.validation:
+                # The helper already explained a duplicate-name or render failure.
+                result.append(person)
+                continue
+
+            person.email = ""
+            person.source = ""
+            person.validation = (
+                "skipped: last name masked by Apollo Free plan; this pattern needs the full last name"
+                if person.masked
+                else "skipped: contact name is incomplete; this pattern needs the full name"
             )
-            person.reason = "pattern_guess"
+            person.confidence = "n/a"
+            person.reason = "masked_name" if person.masked else "incomplete_name"
             result.append(person)
 
         if not found_candidate:
@@ -853,6 +1049,7 @@ class RunManager:
         people_count: int,
         guessed: int,
         low: int,
+        partial: int,
         masked: int,
         selection_note: str,
         reveal,
@@ -867,7 +1064,8 @@ class RunManager:
         bits.append(
             f"team {people_count}: {guessed} guessed"
             + (f" ({low} low-confidence)" if low else "")
-            + f", {masked} masked/skipped"
+            + (f", {partial} partial-name" if partial else "")
+            + f", {masked} masked/without email"
         )
         if reveal.credit_delta is not None:
             bits.append(f"Apollo credits {reveal.credits_before} -> {reveal.credits_after}")
@@ -898,6 +1096,18 @@ class RunManager:
             if result is not None and result.domain not in seen:
                 seen.add(result.domain)
                 results.append(result)
+
+        # Older ledger rows may predate a newly recognised pattern format.
+        # Re-running the local matcher costs no Apollo credit and makes old
+        # companies benefit from the improved inference.
+        for result in results:
+            filled = reenrich_result(result, self._mx)
+            if filled:
+                self._log(
+                    f"re-enriched {filled} teammate(s) for {result.company_name or result.domain} "
+                    "using the stored reveal (0 credits)"
+                )
+
         statuses = self.db.domain_statuses()
         path = await asyncio.to_thread(
             write_output,

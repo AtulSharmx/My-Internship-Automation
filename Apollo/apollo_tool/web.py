@@ -18,6 +18,7 @@ from .config import settings
 from .db import Database
 from .excel_io import InputError, normalize_domain, read_input
 from .runner import RunAlreadyActive, RunManager
+from desktop_window import close_desktop_window
 
 app = FastAPI(title="Apollo Email Finder", docs_url=None, redoc_url=None)
 db = Database(settings.db_path)
@@ -31,6 +32,9 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 # Shared by the Telegram bot and the little desktop window.  This is only an
 # in-memory, local-only activity snapshot; it is not used by the ledger.
 last_upload: dict[str, Any] | None = None
+# The Telegram Start button starts a brand-new upload session.  The counter
+# lets an already-open popup clear itself without a reload/flash.
+desktop_session = 0
 
 
 class StartRequest(BaseModel):
@@ -184,6 +188,39 @@ async def dismiss_upload() -> dict[str, Any]:
     if manager.running:
         raise HTTPException(status_code=409, detail="Stop the current run first")
     last_upload = None
+    return {"ok": True, "desktop_session": desktop_session}
+
+
+@app.post("/api/desktop/reset")
+async def reset_desktop() -> dict[str, Any]:
+    """Start a clean upload session for the Telegram Start button.
+
+    The file preview previously survived in memory between runs, which made
+    the popup show an old spreadsheet from the previous run.  Start now asks
+    for a fresh upload and tells every open popup to clear itself.
+    """
+    global last_upload, desktop_session
+    if manager.running:
+        return {
+            "ok": True,
+            "reset": False,
+            "running": True,
+            "desktop_session": desktop_session,
+        }
+    last_upload = None
+    desktop_session += 1
+    return {
+        "ok": True,
+        "reset": True,
+        "running": False,
+        "desktop_session": desktop_session,
+    }
+
+
+@app.post("/api/desktop/close")
+async def close_desktop() -> dict[str, Any]:
+    """Close the app-style upload popup after a run has started."""
+    await asyncio.to_thread(close_desktop_window)
     return {"ok": True}
 
 
@@ -204,6 +241,7 @@ async def start(request: StartRequest) -> dict[str, Any]:
 async def status() -> dict[str, Any]:
     data = manager.status()
     data["last_upload"] = last_upload
+    data["desktop_session"] = desktop_session
     return data
 
 

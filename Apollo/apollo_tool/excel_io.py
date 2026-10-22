@@ -7,11 +7,13 @@ import json
 import math
 import os
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -487,24 +489,96 @@ def _unprocessed_note(row: InputRow, statuses: dict[str, dict[str, Any]]) -> str
     return "not processed yet (run limit reached or waiting); no credit spent"
 
 
+@dataclass
+class EmployeeRecord:
+    """One row of the clean employee sheet plus its provenance."""
+
+    values: list[Any]
+    domain: str
+    company: str
+    source: str = ""
+    confidence: str = ""
+    validation: str = ""
+    reason: str = ""
+
+
+BLANK_REASON_LABELS = {
+    "masked_name": "last name masked by the Apollo Free plan",
+    "incomplete_name": "contact name is incomplete",
+    "no_pattern": "no company-wide email pattern could be derived",
+    "no_candidate": "Apollo had no revealable contact for this company",
+    "render_failed": "name could not be rendered with the company pattern",
+    "duplicate_first_name": "duplicate first name; masked contact is ambiguous",
+    "duplicate_rendered_email": "rendered address would collide with another contact",
+    "email-cell-unavailable": "Apollo showed the email as unavailable",
+    "dry_run": "dry run; no email was revealed",
+    "revealed": "Apollo did not return an email",
+}
+
+
+def _blank_reason_label(reason: str, validation: str) -> str:
+    if reason in BLANK_REASON_LABELS:
+        return BLANK_REASON_LABELS[reason]
+    if validation:
+        text = validation.split(";", 1)[0].strip()
+        if text.lower().startswith("skipped:"):
+            text = text.split(":", 1)[1].strip()
+        if text:
+            return text[0].lower() + text[1:]
+    return "no email was collected for this contact"
+
+
+def _email_cell_note(record: EmployeeRecord) -> str:
+    email = str(record.values[5] or "").strip()
+    if email:
+        if record.source == "verified":
+            return (
+                "Verified: this exact address was revealed by Apollo. "
+                "It is safe to use."
+            )
+        detail = (record.validation or "derived from the company pattern").strip()
+        if record.confidence == "low":
+            partial = (
+                " The name was masked or incomplete, so only part of the name "
+                "could be used."
+                if record.reason == "partial_name_guess"
+                else ""
+            )
+            return (
+                "LOW-CONFIDENCE pattern guess. "
+                f"{detail}.{partial} Not verified by Apollo — verify before sending."
+            )
+        return (
+            "Pattern guess, not verified by Apollo. "
+            f"{detail}. Double-check before outreach."
+        )
+    reason = _blank_reason_label(record.reason, record.validation)
+    detail = f" {record.validation.strip()}" if record.validation.strip() else ""
+    return f"No email collected: {reason}.{detail}"
+
+
 def _employee_rows(
     input_wb: InputWorkbook,
     by_domain: dict[str, CompanyResult],
     by_wfid: dict[str, CompanyResult],
-) -> list[list[Any]]:
+) -> list[EmployeeRecord]:
     """Build the clean, people-first view requested for the finished workbook.
 
     One row per discovered employee, with the email intentionally kept as the
-    last column. Companies that were not processed yet still get one row so no
-    input company disappears from the primary sheet.
+    last column. Companies with no collected contacts are intentionally omitted
+    here (they remain in the original-data sheet); otherwise the primary sheet
+    would be mostly placeholder rows.
     """
-    rows: list[list[Any]] = []
+    records: list[EmployeeRecord] = []
     seen_domains: set[str] = set()
     for input_row in input_wb.rows:
         if not input_row.domain or input_row.domain in seen_domains:
             continue
         seen_domains.add(input_row.domain)
         result = _result_for_row(input_row, by_domain, by_wfid)
+        if result is None:
+            continue
+
         company = (
             (result.company_name if result else "")
             or input_row.company_name
@@ -523,34 +597,55 @@ def _employee_rows(
                 or ""
             ).strip()
 
-        people = list(result.people) if result else []
+        people = [
+            person
+            for person in (result.people or [])
+            if person.full_name or person.name_raw or person.email
+        ]
         if people:
             for person in people:
-                rows.append(
-                    [
-                        person.full_name or person.name_raw,
+                records.append(
+                    EmployeeRecord(
+                        values=[
+                            person.full_name or person.name_raw,
+                            company,
+                            members,
+                            website,
+                            person.title,
+                            person.email,
+                        ],
+                        domain=input_row.domain,
+                        company=company,
+                        source=person.source,
+                        confidence=person.confidence,
+                        validation=person.validation,
+                        reason=person.reason,
+                    )
+                )
+            continue
+
+        if result.revealed_name or result.email:
+            records.append(
+                EmployeeRecord(
+                    values=[
+                        result.revealed_name or "",
                         company,
                         members,
                         website,
-                        person.title,
-                        person.email,
-                    ]
+                        "",
+                        result.email or "",
+                    ],
+                    domain=input_row.domain,
+                    company=company,
+                    source=result.email_source,
+                    confidence="high" if result.email else "",
+                    validation=(
+                        "real email revealed via Apollo" if result.email else ""
+                    ),
+                    reason="revealed" if result.email else "",
                 )
-            continue
-        if result and (result.revealed_name or result.email):
-            rows.append(
-                [
-                    result.revealed_name or "",
-                    company,
-                    members,
-                    website,
-                    "",
-                    result.email or "",
-                ]
             )
-            continue
-        rows.append(["", company, members, website, "", ""])
-    return rows
+    return records
 
 
 def _add_employees_sheet(
@@ -558,7 +653,7 @@ def _add_employees_sheet(
     input_wb: InputWorkbook,
     by_domain: dict[str, CompanyResult],
     by_wfid: dict[str, CompanyResult],
-) -> None:
+) -> list[EmployeeRecord]:
     name = "employees"
     if name in wb.sheetnames:
         name = "employee_list"
@@ -571,7 +666,8 @@ def _add_employees_sheet(
         "Job Title",
         "Email",
     ]
-    rows = _employee_rows(input_wb, by_domain, by_wfid)
+    records = _employee_rows(input_wb, by_domain, by_wfid)
+    rows = [record.values for record in records]
     ws.append(headers)
     for values in rows:
         ws.append(values)
@@ -584,26 +680,302 @@ def _add_employees_sheet(
     ws.sheet_properties.tabColor = "2E7D32"
     ws.sheet_view.showGridLines = False
 
-    for row_idx, values in enumerate(rows, start=2):
+    ws.cell(row=1, column=6).comment = Comment(
+        "Email colour key:\n"
+        "Green = verified by Apollo\n"
+        "Yellow = high-confidence pattern guess\n"
+        "Orange = low-confidence / partial-name guess\n"
+        "Grey = no email collected (hover for the reason)",
+        "Apollo Email Finder",
+        width=360,
+        height=150,
+    )
+
+    for row_idx, record in enumerate(records, start=2):
         ws.cell(row=row_idx, column=3).alignment = Alignment(
             horizontal="center", vertical="top", wrap_text=True
         )
         title_cell = ws.cell(row=row_idx, column=5)
         title_cell.alignment = Alignment(vertical="top", wrap_text=True)
-        if title_cell.value:
-            ws.row_dimensions[row_idx].height = _wrap_height(str(title_cell.value), 38)
         website_cell = ws.cell(row=row_idx, column=4)
         if isinstance(website_cell.value, str) and website_cell.value.startswith(
             ("http://", "https://")
         ):
             website_cell.hyperlink = website_cell.value
             website_cell.font = LINK_FONT
+
         email_cell = ws.cell(row=row_idx, column=6)
-        email_cell.alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
-        if email_cell.value:
-            email_cell.hyperlink = f"mailto:{email_cell.value}"
-            email_cell.font = LINK_FONT
+        email_cell.alignment = Alignment(
+            horizontal="center", vertical="top", wrap_text=True
+        )
+        email_cell.comment = Comment(
+            _email_cell_note(record),
+            "Apollo Email Finder",
+            width=380,
+            height=150,
+        )
+        email = str(email_cell.value or "").strip()
+        if email:
+            email_cell.hyperlink = f"mailto:{email}"
+            if record.source == "verified":
+                email_cell.fill = VERIFIED_FILL
+                email_cell.font = Font(
+                    name="Calibri", size=11, bold=True, color="1E6B45",
+                    underline="single",
+                )
+            elif record.confidence == "low":
+                email_cell.fill = LOW_FILL
+                email_cell.font = Font(
+                    name="Calibri", size=11, bold=True, color="C55A11",
+                    underline="single",
+                )
+            else:
+                email_cell.fill = GUESSED_FILL
+                email_cell.font = Font(
+                    name="Calibri", size=11, bold=True, color="8A5A00",
+                    underline="single",
+                )
+        else:
+            email_cell.fill = SKIP_FILL
+            email_cell.font = Font(name="Calibri", size=11, color="595959")
+
+        height = _wrap_height(str(title_cell.value or ""), 38)
+        if email:
+            height = max(height, _wrap_height(email, 34))
+        ws.row_dimensions[row_idx].height = height
     wb.active = 0
+    return records
+
+
+def _add_run_summary_sheet(
+    wb: Workbook,
+    input_wb: InputWorkbook,
+    results: list[CompanyResult],
+    records: list[EmployeeRecord],
+) -> None:
+    ws = wb.create_sheet("Run summary")
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = "7030A0"
+    ws.column_dimensions["A"].width = 44
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 94
+
+    def section(title: str) -> None:
+        ws.append([title])
+        row = ws.max_row
+        for col in range(1, 4):
+            cell = ws.cell(row=row, column=col)
+            cell.fill = HEADER_FILL
+            cell.border = BORDER
+        ws.cell(row=row, column=1).font = Font(
+            name="Calibri", size=12, bold=True, color="FFFFFF"
+        )
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+        ws.row_dimensions[row].height = 22
+
+    def table_header(first: str, second: str, third: str) -> None:
+        ws.append([first, second, third])
+        row = ws.max_row
+        for col in range(1, 4):
+            cell = ws.cell(row=row, column=col)
+            cell.fill = PatternFill("solid", fgColor="D9E2F3")
+            cell.font = Font(name="Calibri", size=11, bold=True, color="1F3864")
+            cell.border = BORDER
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        ws.row_dimensions[row].height = 22
+
+    def table_row(first: Any, second: Any, third: Any, fill: str = "") -> None:
+        ws.append([first, second, third])
+        row = ws.max_row
+        for col in range(1, 4):
+            cell = ws.cell(row=row, column=col)
+            cell.font = BODY_FONT
+            cell.border = BORDER
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        if fill:
+            ws.cell(row=row, column=1).fill = PatternFill("solid", fgColor=fill)
+        ws.row_dimensions[row].height = _wrap_height(str(third or ""), 94)
+
+    ws.append(["Apollo Email Finder — run summary"])
+    ws.merge_cells("A1:C1")
+    ws["A1"].font = Font(name="Calibri", size=16, bold=True, color="1F3864")
+    ws["A1"].alignment = Alignment(vertical="center")
+    ws.row_dimensions[1].height = 30
+    ws.append([f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}"])
+    ws.merge_cells("A2:C2")
+    ws["A2"].font = Font(name="Calibri", size=10, italic=True, color="666666")
+    ws.append([])
+
+    input_domains = {row.domain for row in input_wb.rows if row.domain}
+    contact_domains = {record.domain for record in records if record.domain}
+    total = len(records)
+    filled = sum(1 for record in records if str(record.values[5] or "").strip())
+    verified = sum(
+        1
+        for record in records
+        if record.source == "verified" and str(record.values[5] or "").strip()
+    )
+    guessed = sum(
+        1
+        for record in records
+        if record.source == "guessed" and str(record.values[5] or "").strip()
+    )
+    low_guessed = sum(
+        1
+        for record in records
+        if record.source == "guessed"
+        and record.confidence == "low"
+        and str(record.values[5] or "").strip()
+    )
+    high_guessed = guessed - low_guessed
+    blanks = total - filled
+    credits = sum(max(0, int(result.credit_spent or 0)) for result in results)
+    live_results = [result for result in results if not result.dry_run]
+    dry_results = [result for result in results if result.dry_run]
+    if live_results and dry_results:
+        mode = "Mixed live + dry run"
+    elif live_results:
+        mode = "Live run"
+    elif dry_results:
+        mode = "Dry run (no Apollo credits)"
+    else:
+        mode = "No companies processed"
+    coverage = f"{filled / total:.0%}" if total else "n/a"
+
+    section("AT A GLANCE")
+    table_header("Metric", "Value", "Details")
+    table_row("Mode", mode, "Dry runs collect contacts without revealing an email.")
+    table_row("Input file", input_wb.path.name, str(input_wb.path.parent))
+    table_row("Input companies", len(input_domains), "Unique domains with a usable website.")
+    table_row(
+        "Companies with collected contacts",
+        len(contact_domains),
+        "Only these companies appear on the employees sheet.",
+    )
+    table_row(
+        "Companies without collected contacts",
+        max(0, len(input_domains) - len(contact_domains)),
+        "Kept in the original-data sheet; omitted from employees to avoid placeholder rows.",
+    )
+    table_row("Contacts listed", total, "Rows on the employees sheet.")
+    table_row(
+        "Emails filled",
+        f"{filled} ({coverage})",
+        "Verified + pattern-guessed emails.",
+    )
+    table_row("Verified emails", verified, "Exact address revealed by Apollo. Safe to use.")
+    table_row(
+        "Pattern guesses (high confidence)",
+        high_guessed,
+        "Followed a common company format; still not verified by Apollo.",
+    )
+    table_row(
+        "Pattern guesses (low confidence)",
+        low_guessed,
+        "Unusual format or masked/partial name. Verify before sending.",
+    )
+    table_row(
+        "Contacts without email",
+        blanks,
+        "See the reasons table below; blanks are intentional, not lost data.",
+    )
+    table_row("Credits spent", credits, "Only live Apollo reveals spend credits.")
+    ws.append([])
+
+    section("EMAIL COLOUR KEY")
+    table_header("Email colour", "Meaning", "How to use it")
+    table_row("Green", "Verified by Apollo", "Safe to use.", fill="C6EFCE")
+    table_row(
+        "Yellow",
+        "High-confidence pattern guess",
+        "Format matched a common company pattern. Spot-check before outreach.",
+        fill="FFEB9C",
+    )
+    table_row(
+        "Orange",
+        "Low-confidence / partial-name guess",
+        "Unusual format, or only a masked/partial name was available. Verify first.",
+        fill="FCE4D6",
+    )
+    table_row(
+        "Grey",
+        "No email collected",
+        "Hover over the cell for the exact reason, or see the table below.",
+        fill="E7E6E6",
+    )
+    ws.append([])
+
+    section("WHY AN EMAIL MAY BE BLANK")
+    table_header("Reason", "Contacts", "Examples")
+    blank_records = [
+        record for record in records if not str(record.values[5] or "").strip()
+    ]
+    reason_counts: dict[str, list[EmployeeRecord]] = {}
+    for record in blank_records:
+        label = _blank_reason_label(record.reason, record.validation)
+        reason_counts.setdefault(label, []).append(record)
+    if reason_counts:
+        for label, grouped in sorted(
+            reason_counts.items(), key=lambda item: (-len(item[1]), item[0])
+        ):
+            examples: list[str] = []
+            for record in grouped:
+                name = str(record.values[0] or "").strip() or "unnamed contact"
+                examples.append(f"{name} ({record.company})")
+                if len(examples) == 3:
+                    break
+            if len(grouped) > 3:
+                examples.append(f"+{len(grouped) - 3} more")
+            table_row(label, len(grouped), "; ".join(examples))
+    else:
+        table_row("None", 0, "Every listed contact has an email.")
+    ws.append([])
+
+    section("HOW TO READ THIS WORKBOOK")
+    notes = [
+        (
+            "Verified",
+            "Apollo revealed this exact address for this contact. No guessing was involved.",
+        ),
+        (
+            "Pattern guesses",
+            "One real company email is revealed, its local format is learned (for example "
+            "first.last), and the same format is applied to teammates. These addresses are "
+            "plausible but are not confirmed by Apollo.",
+        ),
+        (
+            "Low-confidence guesses",
+            "Used when the revealed format is unusual (for example last-initial + first name) "
+            "or the teammate's last name is masked by Apollo's Free plan. Treat them as leads, "
+            "not verified addresses.",
+        ),
+        (
+            "Masked names",
+            "Apollo Free hides most last names. A masked contact is only guessed when the "
+            "company pattern can be rendered from the first name and last initial. Patterns "
+            "that need the full last name are left blank instead of inventing one.",
+        ),
+        (
+            "Re-enrichment",
+            "When an older saved result is rebuilt, its already-revealed email is reused to "
+            "re-check teammates locally. This costs no additional Apollo credits.",
+        ),
+        (
+            "Blank rows",
+            "Blanks are deliberate. They usually mean Apollo masked the name, no reliable "
+            "company pattern existed, or the contact had no available email. The reason is on "
+            "the blank cell's comment and in the table above.",
+        ),
+        (
+            "Before outreach",
+            "Treat yellow and orange addresses as candidates. Verify them with a mail checker "
+            "or a small test send before using them for bulk email.",
+        ),
+    ]
+    table_header("Topic", "", "Explanation")
+    for topic, explanation in notes:
+        table_row(topic, "", explanation)
+    ws.freeze_panes = "A3"
 
 
 def write_output(
@@ -810,11 +1182,15 @@ def write_output(
             str(validation_cell.value or ""), 34
         )
 
-    _add_employees_sheet(wb, input_wb, by_domain, by_wfid)
+    employee_records = _add_employees_sheet(wb, input_wb, by_domain, by_wfid)
+    _add_run_summary_sheet(wb, input_wb, results, employee_records)
 
     wb.properties.title = "Apollo email enrichment"
     wb.properties.creator = "Apollo Email Finder"
-    wb.properties.description = "Generated locally. Verified email revealed via Apollo UI; guesses are pattern-derived."
+    wb.properties.description = (
+        "Generated locally. Green = verified via Apollo; yellow/orange = "
+        "pattern guesses; grey = no email. See the Run summary sheet for details."
+    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = output_path.with_name(output_path.stem + ".tmp" + output_path.suffix)

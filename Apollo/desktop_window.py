@@ -111,23 +111,25 @@ def _screen_center(size: tuple[int, int]) -> tuple[int, int]:
     return (max(0, (width - size[0]) // 2), max(0, (height - size[1]) // 2))
 
 
-def _launch() -> bool:
+def _launch(fresh: bool = True) -> bool:
     browser = _browser()
     if browser is None:
         return False
     profile = settings.root / "desktop_profile"
     profile.mkdir(parents=True, exist_ok=True)
-    x, y = _screen_center((560, 780))
+    size = (680, 780)
+    x, y = _screen_center(size)
+    url = DESKTOP_URL + ("?fresh=1" if fresh else "")
     args = [
         str(browser),
-        f"--app={DESKTOP_URL}",
+        f"--app={url}",
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-sync",
         "--disable-extensions",
         "--disable-features=Translate",
-        "--window-size=560,780",
+        f"--window-size={size[0]},{size[1]}",
         f"--window-position={x},{y}",
     ]
     try:
@@ -150,8 +152,12 @@ def _launch() -> bool:
     return False
 
 
-def show_desktop_window() -> bool:
+def show_desktop_window(fresh: bool = True) -> bool:
     """Bring the popup forward, launching it if it was closed.
+
+    ``fresh`` is kept for the Telegram Start flow: a brand-new window starts on
+    the empty upload card.  Existing windows are reset by the desktop session
+    counter returned from ``/api/status`` and by the page polling loop.
 
     A launch grace period stops rapid taps (or a monitor plus a button press)
     from spawning two app windows while the first one is still starting.
@@ -176,7 +182,7 @@ def show_desktop_window() -> bool:
         if _browser() is None:
             return False
         _LAST_LAUNCH = now
-        return _launch()
+        return _launch(fresh=fresh)
 
 
 def close_desktop_window() -> None:

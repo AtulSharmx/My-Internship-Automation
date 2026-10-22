@@ -439,6 +439,7 @@ class ApolloBrowser:
         except Exception:  # noqa: BLE001
             pass
         self._pw = None
+        log.info("Apollo Chrome closed")
 
     async def _pause(self, low: float | None = None, high: float | None = None) -> None:
         await asyncio.sleep(random.uniform(low or self.settings.page_delay_min, high or self.settings.page_delay_max))
@@ -509,10 +510,18 @@ class ApolloBrowser:
     async def ensure_logged_in(self) -> None:
         await self.goto("https://app.apollo.io/")
         await asyncio.sleep(3)
-        for _ in range(8):
+        # The old check required a visible "/people" nav link. Apollo's SPA can
+        # take longer than that and still be fully logged in, which caused false
+        # "login required" stops.  A real login page is detected by _check_login;
+        # here we only need the application shell to finish rendering.
+        for _ in range(10):
             try:
-                nav = self.page.locator('a[href*="/people"]')
-                if await nav.count() and await nav.first.is_visible():
+                body = (await self._body()).casefold()
+                if any(
+                    marker in body
+                    for marker in ("people", "companies", "home", "search")
+                ):
+                    await self._check_login()
                     return
             except Exception:  # noqa: BLE001
                 pass

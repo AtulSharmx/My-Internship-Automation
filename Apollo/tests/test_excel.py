@@ -357,12 +357,36 @@ def test_write_output_fills_blanks_and_formats(tmp_path):
         "Email",
     ]
     assert employee_headers[-1] == "Email"
-    assert employees.max_row == 5
+    # Example Co has no collected contacts, so it is intentionally absent from
+    # the people-first sheet (it still exists in the original-data sheet).
+    assert employees.max_row == 4
     assert employees["A2"].value == "Tuomas Artman"
     assert employees["B2"].value == "Linear"
     assert employees["C2"].value == "300"
     assert employees["D2"].value == "https://linear.app"
     assert employees["F2"].value == "tuomas.artman@linear.app"
-    assert employees["B5"].value == "Example Co"
-    assert employees["C5"].value == "20"
-    assert employees["F5"].value is None
+    assert employees["F2"].fill.fgColor.rgb.endswith("C6EFCE")
+    assert employees["F3"].fill.fgColor.rgb.endswith("FFEB9C")
+    assert employees["F4"].value is None
+    assert employees["F4"].fill.fgColor.rgb.endswith("E7E6E6")
+    assert employees["F4"].comment is not None
+    assert "masked" in employees["F4"].comment.text.lower()
+    assert employees["F1"].comment is not None
+    assert "Green = verified" in employees["F1"].comment.text
+
+    assert "Run summary" in wb.sheetnames
+    summary = wb["Run summary"]
+    summary_values = [
+        [cell.value for cell in row]
+        for row in summary.iter_rows()
+    ]
+    flat = "\n".join(
+        " | ".join(str(value) for value in row if value is not None)
+        for row in summary_values
+    )
+    assert "Live run" in flat
+    assert "Contacts listed" in flat
+    assert "2 (67%)" in flat
+    assert "Pattern guesses (high confidence)" in flat
+    assert "1" in flat
+    assert "Credits spent" in flat
