@@ -1,9 +1,7 @@
-# MASTER BRIEF — Wellfound Startup Discovery Agent
+# Wellfound Startup Discovery Agent: architecture
 
-> Single-file, copy-pasteable reference for the whole project.
-> Copy this entire file wherever you need the complete picture.
-
----
+How the agent is put together: the pipeline, the database, the exports and the
+test coverage.
 
 ## 1. WHAT THIS PROJECT IS
 
@@ -671,14 +669,3 @@ panel), `startup_agent/export.py` (report schemas + real hyperlinks),
 (banner only), legacy `WF_*` keys in `.env`, all 96 legacy tests, the
 4-column startup sheet.
 
-**No infrastructure was touched** — no AWS, no VPS, no deployment, no charges.
-
----
-
-## 13. HOW TO COPY THIS BRIEF
-
-1. Open `MASTER_BRIEF.md` → Ctrl+A → Ctrl+C.
-2. Paste anywhere (ChatGPT, Notion, email, another AI).
-
-For the raw code, use `MASTER_BRIEF.md` as the map and copy each file from the
-tree in section 3.

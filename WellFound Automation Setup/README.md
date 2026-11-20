@@ -94,7 +94,7 @@ WellFound Automation Setup/
 ├── requirements.txt
 ├── .env.example               # Copy to .env, add TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 ├── .gitignore                 # Git-ignored: .env, browser_profile/, data/, exports/, imports/, logs/
-├── MASTER_BRIEF.md            # Full design spec (internal)
+├── ARCHITECTURE.md             # Pipeline, schema, exports, tests
 └── README.md                  # This file
 ```
 

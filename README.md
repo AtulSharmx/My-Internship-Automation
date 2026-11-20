@@ -1,90 +1,93 @@
-# My Internship Automation
+# My internship automation
 
-Two independent, standalone automation tools for finding startup opportunities and enriching company data — both running locally on your machine, using your own browser sessions, with full Telegram control panels.
+Two tools I built for my own internship search. Both run locally on my machine against my
+own signed-in browser sessions, and both are driven from a Telegram bot so I can start a
+run and pull the results from my phone.
 
----
+They are separate tools that happen to chain together. The Wellfound one finds companies,
+the Apollo one finds who to email at them.
 
-## 📦 Repository Structure
+## Wellfound startup discovery
 
+Finds real 1 to 10 person startups on Wellfound and verifies their actual company website,
+then gives back a sheet of name, website, platform and team size.
+
+It works in two phases. Phase 1 walks the public role pages over plain HTTP, within what
+robots.txt allows. Phase 2 opens each company profile in a visible browser and reads the
+embedded data the page already renders from, rather than trying to reconstruct it.
+
+Output is a four column sheet, or a ten column export once websites are verified.
+
+## Apollo email finder
+
+Takes that company list and finds one real contact email per company through Apollo, then
+works out the rest of the team's addresses from the pattern it sees and MX-validates them
+before writing them out.
+
+The design problem here was credits. Apollo's free plan gives you very few, and the
+obvious way to write this tool burns them on companies you already looked up. So it spends
+at most one credit per company, keeps a SQLite ledger of every company it has already
+processed so a re-run never spends twice on the same one, and takes a hard cap per run.
+
+You log in to Apollo once in the Chrome window it opens. The profile persists, so later
+runs do not ask again.
+
+Output is an Excel file with a people-first sheet, a full data sheet, and a team_emails
+sheet.
+
+## What these tools will not do
+
+This matters more than the feature list, so it is not buried in it.
+
+Neither tool bypasses anything. No stealth mode, no CAPTCHA solving, no working around
+rate limits. Both read only pages that are public to a signed-in user, and both are rate
+limited on purpose.
+
+If either one hits a security check or a verification page, it stops and tells you on
+Telegram instead of trying to get past it. You go and clear it yourself, then press
+retry.
+
+It is your account and your browser doing the browsing, so it is your risk and your
+responsibility under the platform's terms. I built these to save myself hours of manual
+copying, not to extract data at a scale a person could not.
+
+## Running them
+
+Each tool has its own setup and its own README with the detail:
+
+- `Apollo/README.md`
+- `WellFound Automation Setup/README.md`
+
+On Windows, `setup.ps1` or `setup_wizard.py` in the Wellfound folder installs the
+Playwright browsers for you. Apollo starts with `run_ui.py`, which brings up a local
+server and a desktop popup at `http://127.0.0.1:8765`.
+
+Both need `TELEGRAM_BOT_TOKEN` in `.env` and a chat ID that matches. Only one instance of
+each can run at a time, guarded by a mutex.
+
+## Tests
+
+```bash
+pytest "WellFound Automation Setup/tests"
+pytest Apollo/tests
 ```
-My-Internship-Automation/
-├── Apollo/                      # Apollo Email Finder
-│   ├── apollo_tool/            # Core FastAPI + runner + web UI
-│   ├── telegram_bot.py         # Telegram control panel (primary interface)
-│   ├── desktop_window.py       # Native "app mode" popup window
-│   ├── run_ui.py               # Start local server + open browser
-│   ├── requirements.txt
-│   └── README.md               # Apollo-specific docs
-│
-└── WellFound Automation Setup/  # Wellfound Startup Discovery Agent
-    ├── startup_agent/          # Core discovery + verification pipeline
-    ├── wfbot/                  # Legacy internship application bot (preserved)
-    ├── tools/                  # Manual capture helpers
-    ├── deploy/                 # Windows autostart, Docker, VPS scripts
-    ├── config/, data/, exports/, imports/, logs/, templates/
-    ├── run.py                  # Entry point (Telegram agent + background scan)
-    ├── setup.ps1, setup_wizard.py, setup_discovery.py
-    ├── watchdog.py             # Supervisor: auto-restart, daily schedule
-    ├── requirements.txt
-    └── README.md               # WellFound-specific docs
-```
 
----
+Apollo covers the credit ledger, the email pattern matching, MX checking, the Excel
+writer, the runner and the Telegram bot. The Wellfound side covers scan control and a
+smoke test over the pipeline.
 
-## 🔍 Wellfound Startup Discovery Agent
+## Requirements
 
-Finds **real 1–10 employee startups** on Wellfound through your own visible, signed-in browser session, verifies their official websites, and gives you a complete Telegram control panel. Uses a two-phase approach: Phase 1 walks public role pages (HTTP, robots.txt‑allowed), Phase 2 reads each company's profile in a plain browser, extracting the same embedded Apollo data the page renders from.
+Windows 10 or 11 is the main target, tested on Python 3.14 and working on 3.11 and up.
+Apollo runs on Linux and macOS too; the Wellfound collector needs a Chromium browser
+available. Edge or Chrome should be installed, since both tools use a persistent browser
+profile and the app-mode popup window.
 
-**Responsible design**: reads only public pages, respects robots.txt, no login needed for Phase 1, rate-limited, stops and reports on any security check (never bypassed). Your own account, your own risk.
+## Architecture
 
-- **What it collects**: company name, website, team size (1–10), industry/niche, official website, verification status
-- **Output**: 4-column sheet (Name, Website, Platform, Members) or full verified export (10 columns)
-- **Telegram control**: Scan start/stop, live progress, download exports
-- **Responsible**: no stealth, no CAPTCHA bypass, no rate-limit bypass, pauses on verification pages for manual action
+`WellFound Automation Setup/ARCHITECTURE.md` has the full picture: the pipeline stages,
+the SQLite schema, the export formats and the test coverage.
 
----
+## License
 
-## 🔐 Apollo Email Finder
-
-Takes a company list, finds one real contact email per company via Apollo, and intelligently guesses the rest of the team's emails from the pattern. Uses a Playwright-driven persistent logged-in browser, title-priority ranking, SQLite credit ledger, pattern-matching, and MX validation.
-
-**Responsible design**: Apollo's free plan has very limited credits, so this tool never spends more than one credit per company, keeps a persistent ledger so it never re-spends on an already-processed company, and lets you set exactly how many new companies to spend on per run.
-
-- **What it does**: upload company spreadsheet → Apollo finds one verified email per company → guesses teammate patterns → MX-validates → outputs Excel with two sheets (people-first + all data) + team_emails sheet
-- **Credit safety**: one credit per company max, persistent SQLite ledger, never re-spends, limit cap per run, stops on challenge (you solve it, then Retry)
-- **Local UI**: upload/start/live-progress desktop popup at http://127.0.0.1:8765
-- **Telegram**: upload files, start runs, live status, stop, latest file, laptop reopen
-- **One-time login**: log in to Apollo once in the Chrome window; profile persists for all later runs
-
----
-
-## 🔗 How the tools connect
-
-The Wellfound tool's output (company name + website + domain) feeds directly into the Apollo tool's input. Export the Wellfound leads as an Excel/CSV file, then upload it to Apollo to find emails and team patterns for each company.
-
----
-
-## 🛠 Requirements
-
-- **Windows 10/11** (primary), Linux/macOS (Apollo works; WellFound browser collector needs Chromium)
-- **Python 3.11+** (tested on 3.14)
-- **Edge or Chrome** installed (for persistent profiles + app-mode popup)
-- **Playwright browsers** — installed automatically by `setup.ps1` / `setup_wizard.py`
-
----
-
-## 📄 License
-
-MIT — use freely, modify, distribute. No warranty.
-
----
-
-## 🙋 Support
-
-- **Apollo issues** → check `Apollo/README.md` and `Apollo/logs/`
-- **WellFound issues** → check `WellFound Automation Setup/README.md` and `logs/startup_agent.log`
-- **Telegram bot not responding** → verify `TELEGRAM_BOT_TOKEN` in `.env`, check chat ID matches, ensure only one instance runs (mutex protected)
-
----
-
-*Built for personal research use. Respect platform Terms of Service. You run the browser, you own the account, you take the risk.*
+MIT.
